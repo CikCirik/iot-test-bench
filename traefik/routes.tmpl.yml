@@ -59,6 +59,16 @@ http:
       middlewares:
         - admin-auth@file
 
+    bms-floor:
+      # BMS SetUp (mihaimurra001/SetUp_CL, repo separat), rol floor_manager -
+      # aplicatie Coolify distincta pe acelasi Server, are login propriu
+      # (server/auth.js), deci fara admin-auth aici.
+      rule: "Host(`bms-floor.__CLUSTER_DOMAIN__`)"
+      entrypoints:
+        - websecure
+      tls: true
+      service: bms-floor
+
   services:
     nodered:
       loadBalancer:
@@ -81,3 +91,9 @@ http:
       loadBalancer:
         servers:
           - url: "http://host.docker.internal:8002"
+
+    bms-floor:
+      # Aplicatie Coolify separata, publica portul de host 4173.
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:4173"
