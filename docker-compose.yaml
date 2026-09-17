@@ -68,7 +68,7 @@ services:
       - iot
     labels:
       - traefik.enable=true
-      - traefik.http.routers.nodered.rule=Host(`nodered.${CLUSTER_DOMAIN:-test-bench.iotstack}`)
+      - traefik.http.routers.nodered.rule=Host(`nodered.test-bench.iotstack`)
       - traefik.http.routers.nodered.entrypoints=websecure
       - traefik.http.routers.nodered.tls=true
       # FARA admin-auth: Node-RED are login propriu (adminAuth in settings.js).
@@ -87,7 +87,7 @@ services:
       - iot
     labels:
       - traefik.enable=true
-      - traefik.http.routers.zigbee2mqtt.rule=Host(`zigbee2mqtt.${CLUSTER_DOMAIN:-test-bench.iotstack}`)
+      - traefik.http.routers.zigbee2mqtt.rule=Host(`zigbee2mqtt.test-bench.iotstack`)
       - traefik.http.routers.zigbee2mqtt.entrypoints=websecure
       - traefik.http.routers.zigbee2mqtt.tls=true
       - traefik.http.routers.zigbee2mqtt.middlewares=admin-auth@file
@@ -150,7 +150,7 @@ services:
       - iot
     labels:
       - traefik.enable=true
-      - traefik.http.routers.chirpstack.rule=Host(`chirpstack.${CLUSTER_DOMAIN:-test-bench.iotstack}`)
+      - traefik.http.routers.chirpstack.rule=Host(`chirpstack.test-bench.iotstack`)
       - traefik.http.routers.chirpstack.entrypoints=websecure
       - traefik.http.routers.chirpstack.tls=true
       - traefik.http.routers.chirpstack.service=chirpstack
@@ -200,7 +200,7 @@ services:
       - iot
     labels:
       - traefik.enable=true
-      - traefik.http.routers.traefik-dashboard.rule=Host(`traefik.${CLUSTER_DOMAIN:-test-bench.iotstack}`)
+      - traefik.http.routers.traefik-dashboard.rule=Host(`traefik.test-bench.iotstack`)
       - traefik.http.routers.traefik-dashboard.entrypoints=websecure
       - traefik.http.routers.traefik-dashboard.tls=true
       - traefik.http.routers.traefik-dashboard.service=api@internal
