@@ -1,0 +1,18 @@
+# Ruta catre Coolify-ul OFICIAL - instalare separata (scriptul lor oficial:
+# curl -fsSL https://cdn.coollabs.io/coolify/install.sh | sudo bash), NU
+# gestionata prin acest docker-compose.yml. Publica dashboard-ul pe portul de
+# host 8000 - de-asta host.docker.internal (extra_hosts pe serviciul traefik),
+# nu un nume de serviciu din reteaua "iot".
+http:
+  routers:
+    coolify:
+      rule: Host(`coolify.test-bench.iotstack`)
+      entrypoints:
+        - websecure
+      tls: true
+      service: coolify
+  services:
+    coolify:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:8000"

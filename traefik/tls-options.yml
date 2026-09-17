@@ -1,0 +1,11 @@
+# Forteaza HTTP/1.1 (fara h2) pe conexiunile TLS din Traefik. Motiv: cu h2
+# activat (implicit), browserele negociaza h2 cu Traefik, iar proxierea
+# WebSocket-ului editorului Node-RED (canalul /comms) peste o conexiune h2
+# nu functioneaza corect prin acest reverse proxy - simptom: "Lost
+# connection to server, reconnecting" la 1s dupa login, desi conexiunea
+# directa (fara Traefik) merge perfect - verificat empiric.
+tls:
+  options:
+    default:
+      alpnProtocols:
+        - "http/1.1"

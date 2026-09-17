@@ -1,0 +1,207 @@
+# Banc de test, un singur nod, fara Swarm - fiecare serviciu IoT e activat
+# printr-un profil Compose (vezi .env pentru lista si comentarii). Porneste
+# doar ce ai nevoie cu: docker compose --profile nodered --profile chirpstack up -d
+# (sau foloseste ./up.sh, generat mai jos, care citeste .env si construieste
+# automat lista de --profile din INSTALL_*=true/false).
+#
+# Traefik NU are profil - porneste mereu cu "docker compose up", indiferent
+# ce profile alegi (e reverse proxy-ul comun pentru tot ce activezi).
+#
+# Coolify NU e in acest fisier - e o instalare OFICIALA separata (scriptul
+# lor: curl -fsSL https://cdn.coollabs.io/coolify/install.sh | sudo bash),
+# gestionata prin propriul UI web, nu prin acest docker-compose.yml. Traefik-ul
+# de mai jos are doar o RUTA catre ea (traefik/coolify.yml) - vezi README.md.
+
+networks:
+  iot:
+    driver: bridge
+
+volumes:
+  mosquitto-config:
+  mosquitto-data:
+  mosquitto-log:
+  nodered-data:
+  zigbee2mqtt-data:
+  chirpstack-postgres-data:
+  chirpstack-redis-data:
+  chirpstack-gwbridge-config:
+  chirpstack-config:
+  traefik-certs:
+  traefik-dynamic:
+
+services:
+
+  # -------------------- MOSQUITTO (MQTT) --------------------
+  mosquitto:
+    image: eclipse-mosquitto:latest
+    profiles: ["mosquitto"]
+    restart: unless-stopped
+    volumes:
+      - mosquitto-config:/mosquitto/config
+      - mosquitto-data:/mosquitto/data
+      - mosquitto-log:/mosquitto/log
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    networks:
+      - iot
+
+  # -------------------- NODE-RED --------------------
+  nodered:
+    image: nodered/node-red:latest
+    profiles: ["nodered"]
+    restart: unless-stopped
+    environment:
+      - NODERED_AUTH_USER=${NODERED_AUTH_USER:-admin}
+      - NODERED_AUTH_PASS=${NODERED_AUTH_PASS:-}
+      # Folosite in flow-uri (function nodes) prin env.get("QLEAP_BASE_URL")
+      # etc - acelasi API extern ca pe clusterul Swarm (bmsn.quartzmatrix.ro).
+      - QLEAP_BASE_URL=${QLEAP_BASE_URL:-https://bmsn.quartzmatrix.ro:8085}
+      - QLEAP_USER=${QLEAP_USER:-}
+      - QLEAP_PASS=${QLEAP_PASS:-}
+    volumes:
+      - nodered-data:/data
+      # Genereaza automat hash-ul bcrypt din NODERED_AUTH_USER/PASS la fiecare
+      # pornire (vezi nodered/settings.js) - NODERED_AUTH_PASS gol = fara login.
+      - ./nodered/settings.js:/data/settings.js:ro
+    networks:
+      - iot
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.nodered.rule=Host(`nodered.${CLUSTER_DOMAIN}`)
+      - traefik.http.routers.nodered.entrypoints=websecure
+      - traefik.http.routers.nodered.tls=true
+      # FARA admin-auth: Node-RED are login propriu (adminAuth in settings.js).
+
+  # -------------------- ZIGBEE2MQTT --------------------
+  zigbee2mqtt:
+    image: koenkk/zigbee2mqtt:latest
+    profiles: ["zigbee2mqtt"]
+    restart: unless-stopped
+    environment:
+      - ZIGBEE2MQTT_CONFIG_SERIAL_PORT=tcp://${ZIGBEE_HOST}:${ZIGBEE_PORT}
+      - ZIGBEE2MQTT_CONFIG_SERIAL_ADAPTER=${ZIGBEE_ADAPTER:-zstack}
+    volumes:
+      - zigbee2mqtt-data:/app/data
+    networks:
+      - iot
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.zigbee2mqtt.rule=Host(`zigbee2mqtt.${CLUSTER_DOMAIN}`)
+      - traefik.http.routers.zigbee2mqtt.entrypoints=websecure
+      - traefik.http.routers.zigbee2mqtt.tls=true
+      - traefik.http.routers.zigbee2mqtt.middlewares=admin-auth@file
+
+  # -------------------- CHIRPSTACK (LoRaWAN) --------------------
+  chirpstack-postgres:
+    image: postgres:16-alpine
+    profiles: ["chirpstack"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${CHIRPSTACK_POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${CHIRPSTACK_POSTGRES_PASS}"
+      POSTGRES_DB: chirpstack
+    volumes:
+      - chirpstack-postgres-data:/var/lib/postgresql/data
+      # Ruleaza o singura data, cand volumul de date e gol - creeaza
+      # extensiile pg_trgm/hstore fara de care migratiile ChirpStack esueaza
+      # silentios (vezi comentariul din fisierul .sql).
+      - ./chirpstack/postgres-init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - iot
+
+  chirpstack-redis:
+    image: redis:7-alpine
+    profiles: ["chirpstack"]
+    restart: unless-stopped
+    volumes:
+      - chirpstack-redis-data:/data
+    networks:
+      - iot
+
+  chirpstack-gateway-bridge:
+    image: chirpstack/chirpstack-gateway-bridge:4
+    profiles: ["chirpstack"]
+    restart: unless-stopped
+    volumes:
+      - chirpstack-gwbridge-config:/etc/chirpstack-gateway-bridge
+    ports:
+      - "1700:1700/udp"
+    networks:
+      - iot
+
+  # ATENTIE: chirpstack.toml are user/parola Postgres si secretul API scrise
+  # direct (nu preiau ${CHIRPSTACK_POSTGRES_*} din .env) - daca schimbi
+  # parola in .env, editeaza-o si in chirpstack/chirpstack.toml (linia dsn=).
+  chirpstack:
+    image: chirpstack/chirpstack:4
+    profiles: ["chirpstack"]
+    restart: unless-stopped
+    command: ["--config", "/etc/chirpstack"]
+    depends_on:
+      - chirpstack-postgres
+      - chirpstack-redis
+      - chirpstack-gateway-bridge
+    volumes:
+      - chirpstack-config:/etc/chirpstack
+      - ./chirpstack/chirpstack.toml:/etc/chirpstack/chirpstack.toml:ro
+      - ./chirpstack/region_eu868.toml:/etc/chirpstack/region_eu868.toml:ro
+    networks:
+      - iot
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.chirpstack.rule=Host(`chirpstack.${CLUSTER_DOMAIN}`)
+      - traefik.http.routers.chirpstack.entrypoints=websecure
+      - traefik.http.routers.chirpstack.tls=true
+      - traefik.http.routers.chirpstack.service=chirpstack
+      - traefik.http.services.chirpstack.loadbalancer.server.port=8080
+      # FARA admin-auth: ChirpStack are login propriu (admin/admin implicit).
+
+  # -------------------- TRAEFIK (reverse proxy) --------------------
+  # FARA profil - porneste mereu.
+  traefik:
+    image: traefik:v3.6
+    restart: unless-stopped
+    # Necesar ca Traefik (in container) sa poata ruta catre servicii pornite
+    # direct pe host (nu in alt container).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --providers.file.watch=true
+      - --entrypoints.web.address=:${TRAEFIK_HTTP_PORT:-9080}
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:${TRAEFIK_HTTPS_PORT:-9443}
+      - --api.dashboard=true
+    ports:
+      - "${TRAEFIK_HTTP_PORT:-9080}:${TRAEFIK_HTTP_PORT:-9080}"
+      - "${TRAEFIK_HTTPS_PORT:-9443}:${TRAEFIK_HTTPS_PORT:-9443}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-certs:/etc/traefik/certs:ro
+      # FARA :ro pe volumul parinte: fisierele bind-montate direct in acest
+      # director (tls-options.yml, coolify.yml) au nevoie ca directorul
+      # parinte sa permita crearea punctelor de montare - un parinte :ro
+      # blocheaza asta pentru orice fisier nou care nu exista deja fizic in volum.
+      - traefik-dynamic:/etc/traefik/dynamic
+      # Forteaza HTTP/1.1 (fara h2) - cu h2 activat (implicit), WebSocket-ul
+      # editorului Node-RED (/comms) pierde conexiunea la ~1s dupa login prin
+      # acest proxy, desi merge perfect fara Traefik la mijloc - verificat
+      # empiric. Vezi traefik/tls-options.yml pentru detalii.
+      - ./traefik/tls-options.yml:/etc/traefik/dynamic/tls-options.yml:ro
+      # Ruta catre Coolify-ul OFICIAL (instalare separata, port de host 8000) -
+      # provider-ul "file" NU scaneaza subfoldere, de-asta e montat DIRECT in
+      # /etc/traefik/dynamic/, ca tls-options.yml de mai sus.
+      - ./traefik/coolify.yml:/etc/traefik/dynamic/coolify.yml:ro
+    networks:
+      - iot
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.traefik-dashboard.rule=Host(`traefik.${CLUSTER_DOMAIN}`)
+      - traefik.http.routers.traefik-dashboard.entrypoints=websecure
+      - traefik.http.routers.traefik-dashboard.tls=true
+      - traefik.http.routers.traefik-dashboard.service=api@internal
+      - traefik.http.routers.traefik-dashboard.middlewares=admin-auth@file
