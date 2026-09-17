@@ -47,6 +47,18 @@ http:
       middlewares:
         - admin-auth@file
 
+    predict:
+      # Serviciul de ML (agent-ML-realdata, repo separat, deployat ca
+      # aplicatie Coolify distincta pe acelasi Server) - doar /predict_command,
+      # fara login propriu, deci admin-auth e obligatoriu aici.
+      rule: "Host(`predict.__CLUSTER_DOMAIN__`)"
+      entrypoints:
+        - websecure
+      tls: true
+      service: predict
+      middlewares:
+        - admin-auth@file
+
   services:
     nodered:
       loadBalancer:
@@ -62,3 +74,10 @@ http:
       loadBalancer:
         servers:
           - url: "http://chirpstack:8080"
+
+    predict:
+      # Aplicatie Coolify separata (nu pe reteaua "iot"), publica portul de
+      # host 8002 - la fel ca ruta catre Coolify oficial (coolify.yml).
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:8002"
