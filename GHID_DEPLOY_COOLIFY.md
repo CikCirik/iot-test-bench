@@ -1,14 +1,18 @@
-# Ghid complet: Coolify + deploy pentru `iot-test-bench` și `agent-ML-realdata`
+# Ghid complet: Coolify + deploy pentru `iot-test-bench`, `agent-ML-realdata` și `SetUp_CL`
 
 Document de referință, pas cu pas, pentru tot ce s-a făcut ca să ajungem la
-starea actuală: Coolify instalat pe reComputer (`172.16.1.120`), cu **două**
-resurse deployate din **două repo-uri Git separate**:
+starea actuală: Coolify instalat pe reComputer (`172.16.1.120`), cu **trei**
+resurse deployate din **trei repo-uri Git separate**:
 
 1. `iot-test-bench` (`github.com/CikCirik/iot-test-bench`) — stack IoT complet
    (Mosquitto, Node-RED, Zigbee2MQTT, ChirpStack, Traefik), prin Docker Compose.
 2. `agent-ML-realdata` (`github.com/StefanVlad0/agent-ML-realdata`, branch
    `production`) — serviciul de ML (`/predict_command`), doar partea de
    **serving**, prin Dockerfile simplu, rutat prin Traefik-ul de la punctul 1.
+3. `SetUp_CL` (`github.com/mihaimurra001/SetUp_CL`, branch `easy`) — interfața
+   web **BMS SetUp** (înlocuiește dashboard-ul Node-RED pentru configurarea
+   arborelui de clădiri în QLeap), rol **Floor Manager**, prin Dockerfile
+   simplu, rutată tot prin Traefik-ul de la punctul 1.
 
 Nu conține parole/chei reale — acolo unde apare un secret, documentul spune
 **unde** îl găsești (fișier `.env` local sau Environment Variables din
@@ -29,12 +33,18 @@ reComputer (172.16.1.120)
 │     │     └── mosquitto, nodered, zigbee2mqtt, chirpstack(+postgres+redis+gwbridge), traefik
 │     │           Traefik-ul ĂSTA ascultă pe :9080/:9443 (NU pe porturile Coolify)
 │     │
-│     └── Resursa "agent-ML-realdata" (Dockerfile, din repo StefanVlad0/agent-ML-realdata)
-│           └── un singur container, serviciul de predict, publicat pe host :8002
+│     ├── Resursa "agent-ML-realdata" (Dockerfile, din repo StefanVlad0/agent-ML-realdata)
+│     │     └── un singur container, serviciul de predict, publicat pe host :8002
+│     │
+│     └── Resursa "SetUp_CL" (Dockerfile, din repo mihaimurra001/SetUp_CL)
+│           └── un singur container, BMS SetUp - rol floor_manager, publicat pe host :4173
+│                 Se conecteaza la mosquitto-ul din iot-test-bench prin IP-ul
+│                 real al masinii (172.16.1.120:1883), NU host.docker.internal
+│                 - vezi §6.5, motivul e diferit fata de Traefik.
 │
-└── Traefik-ul din iot-test-bench rutează TOATE domeniile (inclusiv predict.*
-      și coolify.*) prin fișiere randate dintr-un TEMPLATE, nu prin etichete
-      Docker pe fiecare container — motivul e explicat detaliat la §3.7.
+└── Traefik-ul din iot-test-bench rutează TOATE domeniile (inclusiv predict.*,
+      bms-floor.* și coolify.*) prin fișiere randate dintr-un TEMPLATE, nu prin
+      etichete Docker pe fiecare container — motivul e explicat detaliat la §3.7.
 ```
 
 **De ce două resurse Coolify separate și nu totul într-un singur
@@ -479,6 +489,240 @@ Traefik ca să re-randeze `routes.yml` din template (fișierul `.tmpl` nu e
 
 ---
 
+## Partea 5 — Deploy `SetUp_CL` / BMS Floor Manager (Dockerfile)
+
+### 5.1 Context — ce anume se deployează
+
+**BMS SetUp**: interfață web care înlocuiește 3 tab-uri din dashboard-ul
+Node-RED (BMS Builder, QLeap Sync, BMS Parameters) pentru configurarea
+arborelui de clădiri/etaje direct în QLeap. Aceeași conexiune ca la
+`agent-ML-realdata` (§3): vorbește cu **același API QLeap** — vezi
+`QLEAP_BASE_URL`/`QLEAP_USER`/`QLEAP_PASS` din `.env`-ul lui `iot-test-bench`,
+credențiale identice cu cele configurate în această aplicație.
+
+Aplicația are **două roluri**, aceeași imagine Docker, decise printr-o
+singură variabilă (`BMS_ROLE`):
+- **`building_manager`** ("Master") — port `4000`, un nod central, pentru
+  toată clădirea.
+- **`floor_manager`** ("Floor") — port `4173`, câte unul per etaj, gândit
+  explicit pentru Raspberry Pi/CM4 sau PC industrial — exact profilul
+  reComputer-ului nostru. **Asta s-a deployat.**
+
+**Important**: `BMS_ROLE` contează DOAR la primul boot al containerului, cât
+timp nu există încă `config.json` în volumul `/data`. După aceea rolul e fixat
+în config și nu se mai poate schimba din variabila de mediu — deci nu
+refolosești niciodată un volum de Master pentru un Floor sau invers.
+
+Repo-ul oferă **trei căi de deploy**, alese explicit pe rând în acest proiect:
+1. `docker-compose.yml` din rădăcină — stiva completă (broker MQTT propriu +
+   master + floor) într-o singură resursă Coolify. **Nu s-a folosit** — Master
+   și Floor pe aceeași mașină nu are sens fizic (Master ar trebui să fie
+   central, nu pe gateway-ul unui etaj).
+2. `deploy/Dockerfile.master` — doar rolul Master, resursă separată.
+3. `deploy/Dockerfile.floor` — doar rolul Floor, resursă separată. **Asta
+   s-a folosit.**
+
+### 5.2 Cheie SSH dedicată — la fel ca la `agent-ML-realdata`
+
+Alt cont GitHub decât al nostru → doar citire, la fel ca §3.2:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/github_setup_cl -N '' -C 'setup-cl@recomputer'
+cat ~/.ssh/github_setup_cl.pub
+```
+
+Pe GitHub → repo `mihaimurra001/SetUp_CL` → **Settings → Deploy keys → Add
+deploy key** → cheia publică → **NU** bifezi "Allow write access".
+
+Cheia privată → Coolify → **Keys & Tokens → Private Keys → Add Private Key**
+→ nume ex. `setup-cl-key`. **Aceeași capcană ca la §3.3** (cheia adăugată aici
+nu înseamnă automat că resursa o folosește) — verifică `private_key_id` din
+DB dacă ai dubii, exact ca acolo.
+
+### 5.3 Creare resursă în Coolify
+
+**New Resource → Dockerfile**:
+
+- **Repository**: `git@github.com:mihaimurra001/SetUp_CL.git`
+- **Private Key**: `setup-cl-key`
+- **Branch**: `easy` (branch-ul activ la momentul acestei implementări — repo-ul
+  are și `main`, dar `main` era în urmă; verifică ce branch conține
+  `deploy/Dockerfile.floor` înainte să presupui `main`, la fel ca la §3.1)
+- **Dockerfile Location**: `/deploy/Dockerfile.floor`
+- **Base Directory**: **`/`** — **CAPCANĂ REALĂ, ne-a picat build-ul din cauza
+  asta**: implicit Coolify a completat `/deploy` (folosind directorul unde
+  stă `Dockerfile.floor`), dar contextul de build trebuie să fie RĂDĂCINA
+  repo-ului, nu `deploy/` — `Dockerfile.floor` are `COPY package.json
+  package-lock.json ./`, `COPY server/ ./server/` etc., toate relative la
+  rădăcină. Cu `Base Directory=/deploy`, aceste fișiere nu există acolo și
+  build-ul eșuează. Verifică direct în DB dacă nu ești sigur ce e salvat:
+  ```bash
+  sudo docker exec coolify-db psql -U coolify -d coolify -c \
+    "select base_directory, status from applications where id=<id>;"
+  ```
+- **Ports Exposes**: `4173`
+- **Ports Mappings**: `4173:4173` (verifică întâi liber, la fel ca §3.4)
+
+### 5.4 Persistent Storage — OBLIGATORIU
+
+Spre deosebire de `agent-ML-realdata` (§3.6), aici volumele **chiar sunt
+necesare** — fără ele, orice redeploy șterge toată configurația etajului
+(arbore clădire, credențiale QLeap, cheia de criptare a instanței):
+
+- volum pe `/data`
+- volum pe `/models`
+
+În UI: resursă → tab **Storage** → **Add Volume** → completezi doar
+**Destination Path** (`/data`, apoi separat `/models`) și un nume — lași
+Coolify să gestioneze un volum Docker named (nu bind mount pe disc). După
+adăugare, e nevoie de un **redeploy** (nu doar restart) ca volumele noi să
+fie montate.
+
+### 5.5 Environment Variables
+
+```bash
+openssl rand -base64 32   # ruleaza de doua ori, o data pt fiecare cheie de mai jos
+```
+
+```
+BMS_MASTER_KEY=<generat, secretul de criptare a configului acestei instante>
+BMS_CLUSTER_KEY=<generat, comun daca vei clusteriza cu un Master mai tarziu>
+```
+
+**De ce doar astea două?** `BMS_ROLE=floor_manager`, `PORT=4173` și
+`HOST=0.0.0.0` sunt deja fixate direct în `ENV` din `deploy/Dockerfile.floor`
+— nu trebuie (și nu are rost) să le suprascrii din Coolify.
+
+`BMS_MASTER_KEY` e tehnic opțional — dacă lipsește, se auto-generează și se
+scrie în `/data/instance.key` (motiv în plus pentru care §5.4 e obligatoriu
+dacă nu setezi cheia explicit). `BMS_CLUSTER_KEY` are un fallback hardcodat,
+nesigur, dacă lipsește — codul chiar are un comentariu care spune "nu-l lăsa
+nesetat în producție".
+
+**Notă despre UI-ul Coolify**: fiecare variabilă apare de două ori în listă
+(`production` + `preview`) — e normal, nu e o greșeală de-a ta, Coolify
+pregătește automat un set separat pentru eventuale deploy-uri de tip preview
+(PR). Nu șterge unul din cele două.
+
+### 5.6 Verificare
+
+```bash
+curl -s http://127.0.0.1:4173/api/auth/session
+```
+Răspuns așteptat, pe o instanță proaspătă:
+```json
+{"ok":true,"session":{"authConfigured":false,"bootstrapMode":true,"deviceRole":"floor_manager", ...}}
+```
+`deviceRole: "floor_manager"` confirmă rolul corect. `bootstrapMode: true`
+înseamnă că interfața o să deschidă automat asistentul de configurare inițială
+la prima accesare din browser.
+
+### 5.7 Conectarea la broker-ul MQTT local din `iot-test-bench`
+
+La prima pornire, în loguri (`docker logs <container>`) apar erori repetate:
+```
+[cluster-mqtt] Eroare conexiune: connect ECONNREFUSED 127.0.0.1:1883
+[QLeap-Forwarder] Eroare conexiune MQTT (mqtt://127.0.0.1:1883): connect ECONNREFUSED 127.0.0.1:1883
+[LoRaWAN:...] Eroare conexiune MQTT: connack timeout
+```
+**Nu e o eroare de deploy** — aplicația are **trei** conexiuni MQTT separate
+(clustering Master↔Floor, forward către QLeap, citire telemetrie LoRaWAN prin
+ChirpStack), toate configurabile **doar din interfața web / API-ul aplicației**,
+niciodată din Environment Variables Coolify. Fără configurare, fiecare
+folosește o adresă placeholder din cod (`127.0.0.1:1883` sau, pentru
+LoRaWAN, `192.168.21.200:1883` — o adresă demo, nu ceva legat de rețeaua
+noastră).
+
+**Ca să conectezi rețeaua LoRaWAN (ChirpStack) la mosquitto-ul REAL din
+`iot-test-bench`**, prin API (loopback pe reComputer, fără autentificare —
+aplicația permite cereri neautentificate doar de pe loopback):
+```bash
+curl -s -X POST http://127.0.0.1:4173/api/protocols/lorawan/networks \
+  -H "Content-Type: application/json" \
+  -d '{"id":"lora_net_default","name":"Rețea LoRaWAN Principală (ChirpStack)","enabled":true,"serverType":"chirpstack","serverUrl":"http://192.168.21.200:8080","brokerUrl":"mqtt://172.16.1.120:1883","baseTopic":"application/+/device/+/event/+"}'
+```
+Verifici rezultatul (`connected: true` dacă a mers):
+```bash
+curl -s http://127.0.0.1:4173/api/protocols/lorawan/networks
+```
+
+**CAPCANĂ, diferită față de §2.7/§4**: prima încercare firească e
+`mqtt://host.docker.internal:1883` (același pattern ca rutele Traefik) — dar
+**nu funcționează aici**, eroare `getaddrinfo ENOTFOUND host.docker.internal`.
+Motivul: `host.docker.internal` NU există automat pe Docker rulând pe Linux
+nativ (spre deosebire de Docker Desktop pe Mac/Windows) — trebuie adăugat
+explicit per-container prin `extra_hosts: host.docker.internal:host-gateway`,
+lucru pe care l-am făcut DOAR pentru containerul Traefik din `iot-test-bench`
+(vezi `docker-compose.yaml`), nu pentru resursele Coolify separate ca aceasta.
+Soluția simplă, fără nicio configurare suplimentară: folosești **IP-ul real
+al mașinii** (`172.16.1.120`), care oricum e adresa la care portul `1883` e
+publicat pe rețea.
+
+`serverUrl` (API-ul REST al ChirpStack, separat de broker-ul MQTT, folosit
+pentru citirea listei de dispozitive/gateway-uri) rămâne pe placeholder-ul
+demo (`http://192.168.21.200:8080`) până se configurează explicit și el —
+nu s-a făcut încă în acest proiect.
+
+Conexiunile `cluster-mqtt` și `QLeap-Forwarder` rămân neconectate — sunt
+legate de sincronizare Master↔Floor, irelevante cât timp nu există un Master
+de clusterizat.
+
+### 5.8 Interfața nu se încarcă în browser deși serverul răspunde corect
+
+Dacă `curl` către endpoint-urile de mai sus merge dar în browser nu apare
+nimic (sau eroare de conectare) — aproape sigur lipsește `bms-floor.<domeniu>`
+din `hosts`-ul mașinii de pe care accesezi (vezi §2.8, aceeași cauză, doar alt
+subdomeniu care încă nu era acolo). Pe Windows: adaugi în
+`C:\Windows\System32\drivers\etc\hosts` (ca administrator):
+```
+172.16.1.120   bms-floor.test-bench.iotstack
+```
+
+---
+
+## Partea 6 — Integrarea `bms-floor` în Traefik
+
+Identic ca structură cu §4 (`predict`) — un router + un service noi în
+`traefik/routes.tmpl.yml`:
+
+```yaml
+# in sectiunea "routers":
+bms-floor:
+  rule: "Host(`bms-floor.__CLUSTER_DOMAIN__`)"
+  entrypoints:
+    - websecure
+  tls: true
+  service: bms-floor
+  # FARA admin-auth: aplicatia are login propriu (server/auth.js).
+
+# in sectiunea "services":
+bms-floor:
+  loadBalancer:
+    servers:
+      - url: "http://host.docker.internal:4173"
+```
+
+**De ce fără `admin-auth@file`, spre deosebire de `predict`?** `predict` (§4)
+e un API gol, fără nimic care să blocheze accesul neautorizat — de-aia avea
+nevoie obligatoriu de Basic Auth în fața lui. `bms-floor` are propriul sistem
+de autentificare (`server/auth.js`) care, conform comentariului din
+`Dockerfile.floor`, refuză orice cerere care nu vine de pe loopback cât timp
+nu are parolă setată — deci nu e complet neprotejat implicit, la fel cum
+`nodered`/`chirpstack` (§2.7) au login propriu.
+
+**Diferența importantă față de §4**: aici `host.docker.internal:4173` chiar
+funcționează, pentru că ținta e Traefik-ul (containerul din `iot-test-bench`,
+care ARE `extra_hosts` configurat) — spre deosebire de §5.7, unde ținta era
+chiar aplicația BMS SetUp (container separat, fără acel `extra_hosts`). Nu
+confunda cele două situații: **din Traefik către alte aplicații** →
+`host.docker.internal` merge; **din altă aplicație Coolify către oricare alt
+serviciu de pe host** → nu merge, folosești IP-ul real.
+
+Restul pașilor (commit + push + copiere în directorul persistent Coolify +
+restart pe containerul Traefik) identici cu §4.
+
+---
+
 ## Anexă — index rapid de probleme întâlnite și cauza reală
 
 | Simptom | Cauză reală | Unde e explicat |
@@ -489,8 +733,12 @@ Traefik ca să re-randeze `routes.yml` din template (fișierul `.tmpl` nu e
 | Container crash loop, `Is a directory` | Bug Docker: bind mount cu sursă lipsă devine director gol | §2.5-d |
 | Rută 404 deși totul pare corect, doar după redeploy din Git | Coolify dublează `$` în `labels:` | §2.7 |
 | `middleware "admin-auth@file" does not exist` | `setup-traefik-auth.sh` nu a fost rulat pentru ACEA resursă | §2.6 |
-| `ERROR: Repository not found` la deploy | Private Key greșit selectat/neconfirmat pe acea resursă | §3.3 |
+| `ERROR: Repository not found` la deploy | Private Key greșit selectat/neconfirmat pe acea resursă | §3.3, §5.2 |
 | Doar un container pornește dintr-un compose cu mai multe servicii | Build Pack setat greșit (auto-detect în loc de Docker Compose) | §2.3 |
+| Build eșuează, `COPY` nu găsește fișierele | Base Directory greșit (subfolderul Dockerfile-ului, nu rădăcina repo-ului) | §5.3 |
+| O variabilă de mediu apare de două ori în UI | Normal — Coolify creează automat o pereche production/preview per variabilă | §5.5 |
+| `getaddrinfo ENOTFOUND host.docker.internal` dintr-o aplicație Coolify separată | `host.docker.internal` există doar unde ai `extra_hosts` explicit (Traefik-ul nostru) — din altă resursă folosești IP-ul real al mașinii | §5.7, §6 |
+| MQTT conectat la o adresă demo/placeholder care nu duce nicăieri | Broker-ul e configurabil doar din UI/API-ul aplicației, nu din Environment Variables Coolify | §5.7 |
 
 ---
 
@@ -505,5 +753,15 @@ Traefik ca să re-randeze `routes.yml` din template (fișierul `.tmpl` nu e
   acestei implementări, dar merită documentat separat dacă devine relevant.
 - **Numărul exact de porturi libere pe reComputer** se poate schimba dacă se
   adaugă alte resurse Coolify între timp — verifică mereu cu `ss -tlnp`
-  înainte să alegi un port nou, nu presupune că 8002 rămâne mereu liber după
-  acest punct.
+  înainte să alegi un port nou, nu presupune că 8002/4173 rămân mereu libere
+  după acest punct.
+- **Pentru `SetUp_CL`**: `serverUrl` (API-ul REST al ChirpStack) e încă pe
+  placeholder-ul demo (`http://192.168.21.200:8080`), nesetat la adresa reală
+  — doar broker-ul MQTT a fost conectat la `iot-test-bench` (§5.7). Dacă vrei
+  și citirea listei de dispozitive/gateway-uri din ChirpStack-ul real, mai e
+  de configurat.
+- **Rolul Master** (`deploy/Dockerfile.master`, port 4000) nu a fost deployat
+  deloc — dacă la un moment dat apare un al doilea etaj sau o clădire nouă,
+  merită revizitat dacă rămâne "doar Floor-uri fără Master" sau se adaugă un
+  nod central pentru sincronizare (vezi §5.1, opțiunea de clustering prin
+  `BMS_CLUSTER_KEY`).
