@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Pas separat, o singura data: genereaza Basic Auth pentru admin-auth@file
-# (folosit de zigbee2mqtt, pyrunner, traefik-dashboard) - Compose nu are
+# (folosit de zigbee2mqtt, predict si traefik-dashboard) - Compose nu are
 # echivalent pentru configure_traefik() din instalarea Swarm, deci se
 # ruleaza manual. TLS ramane implicit (Traefik genereaza certificat propriu
 # la fiecare pornire) - daca vrei Let's Encrypt, spune-mi si adaug ACME in
-# docker-compose.yml (e online, deci e posibil, spre deosebire de Swarm).
+# docker-compose.yaml (e online, deci e posibil, spre deosebire de Swarm).
 set -euo pipefail
 cd "$(dirname "$0")"
 set -a; source .env; set +a

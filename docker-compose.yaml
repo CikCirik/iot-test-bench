@@ -9,7 +9,7 @@
 #
 # Coolify NU e in acest fisier - e o instalare OFICIALA separata (scriptul
 # lor: curl -fsSL https://cdn.coollabs.io/coolify/install.sh | sudo bash),
-# gestionata prin propriul UI web, nu prin acest docker-compose.yml. Traefik-ul
+# gestionata prin propriul UI web, nu prin acest docker-compose.yaml. Traefik-ul
 # de mai jos are doar o RUTA catre ea (traefik/coolify.yml) - vezi README.md.
 #
 # Rutele Traefik catre serviciile IoT NU sunt etichete Docker pe servicii -
