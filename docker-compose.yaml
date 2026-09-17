@@ -11,6 +11,14 @@
 # lor: curl -fsSL https://cdn.coollabs.io/coolify/install.sh | sudo bash),
 # gestionata prin propriul UI web, nu prin acest docker-compose.yml. Traefik-ul
 # de mai jos are doar o RUTA catre ea (traefik/coolify.yml) - vezi README.md.
+#
+# Rutele Traefik catre serviciile IoT NU sunt etichete Docker pe servicii -
+# sunt randate din traefik/routes.tmpl.yml (provider "file", vezi
+# traefik/entrypoint.sh). Motiv: cand acest proiect e deployat prin Coolify
+# (Git), Coolify dubleaza "$" in orice ${VAR} gasit intr-un bloc "labels:",
+# stricand interpolarea - indiferent de site (etaj/cladire), CLUSTER_DOMAIN
+# se schimba doar din Environment Variables (Coolify) sau .env (local), fara
+# sa mai atingi acest fisier. Traefik nu mai are nevoie de docker.sock.
 
 networks:
   iot:
@@ -66,12 +74,6 @@ services:
       - ./nodered/settings.js:/data/settings.js:ro
     networks:
       - iot
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.nodered.rule=Host(`nodered.test-bench.iotstack`)
-      - traefik.http.routers.nodered.entrypoints=websecure
-      - traefik.http.routers.nodered.tls=true
-      # FARA admin-auth: Node-RED are login propriu (adminAuth in settings.js).
 
   # -------------------- ZIGBEE2MQTT --------------------
   zigbee2mqtt:
@@ -85,12 +87,6 @@ services:
       - zigbee2mqtt-data:/app/data
     networks:
       - iot
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.zigbee2mqtt.rule=Host(`zigbee2mqtt.test-bench.iotstack`)
-      - traefik.http.routers.zigbee2mqtt.entrypoints=websecure
-      - traefik.http.routers.zigbee2mqtt.tls=true
-      - traefik.http.routers.zigbee2mqtt.middlewares=admin-auth@file
 
   # -------------------- CHIRPSTACK (LoRaWAN) --------------------
   chirpstack-postgres:
@@ -148,14 +144,6 @@ services:
       - ./chirpstack/region_eu868.toml:/etc/chirpstack/region_eu868.toml:ro
     networks:
       - iot
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.chirpstack.rule=Host(`chirpstack.test-bench.iotstack`)
-      - traefik.http.routers.chirpstack.entrypoints=websecure
-      - traefik.http.routers.chirpstack.tls=true
-      - traefik.http.routers.chirpstack.service=chirpstack
-      - traefik.http.services.chirpstack.loadbalancer.server.port=8080
-      # FARA admin-auth: ChirpStack are login propriu (admin/admin implicit).
 
   # -------------------- TRAEFIK (reverse proxy) --------------------
   # FARA profil - porneste mereu.
@@ -166,9 +154,13 @@ services:
     # direct pe host (nu in alt container).
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Randeaza traefik/routes.tmpl.yml -> /etc/traefik/dynamic/routes.yml
+    # (inlocuieste __CLUSTER_DOMAIN__ cu valoarea reala), apoi preda
+    # controlul entrypoint-ului original al imaginii - vezi entrypoint.sh.
+    entrypoint: ["/bin/sh", "/etc/traefik-init/entrypoint.sh"]
+    environment:
+      - CLUSTER_DOMAIN=${CLUSTER_DOMAIN:-test-bench.iotstack}
     command:
-      - --providers.docker=true
-      - --providers.docker.exposedbydefault=false
       - --providers.file.directory=/etc/traefik/dynamic
       - --providers.file.watch=true
       - --entrypoints.web.address=:${TRAEFIK_HTTP_PORT:-9080}
@@ -180,12 +172,12 @@ services:
       - "${TRAEFIK_HTTP_PORT:-9080}:${TRAEFIK_HTTP_PORT:-9080}"
       - "${TRAEFIK_HTTPS_PORT:-9443}:${TRAEFIK_HTTPS_PORT:-9443}"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - traefik-certs:/etc/traefik/certs:ro
-      # FARA :ro pe volumul parinte: fisierele bind-montate direct in acest
-      # director (tls-options.yml, coolify.yml) au nevoie ca directorul
-      # parinte sa permita crearea punctelor de montare - un parinte :ro
-      # blocheaza asta pentru orice fisier nou care nu exista deja fizic in volum.
+      # FARA :ro pe volumul parinte: fisierele scrise/montate direct in acest
+      # director (auth.yml generat de setup-traefik-auth.sh, routes.yml
+      # randat la pornire, tls-options.yml, coolify.yml) au nevoie ca
+      # directorul parinte sa permita crearea punctelor de montare/scriere -
+      # un parinte :ro blocheaza asta.
       - traefik-dynamic:/etc/traefik/dynamic
       # Forteaza HTTP/1.1 (fara h2) - cu h2 activat (implicit), WebSocket-ul
       # editorului Node-RED (/comms) pierde conexiunea la ~1s dupa login prin
@@ -196,12 +188,10 @@ services:
       # provider-ul "file" NU scaneaza subfoldere, de-asta e montat DIRECT in
       # /etc/traefik/dynamic/, ca tls-options.yml de mai sus.
       - ./traefik/coolify.yml:/etc/traefik/dynamic/coolify.yml:ro
+      # Template-ul si scriptul de randare - montate in afara /etc/traefik/dynamic
+      # ca provider-ul file (care scaneaza tot din acel director) sa nu incerce
+      # sa le parseze ca fisiere de configurare.
+      - ./traefik/routes.tmpl.yml:/etc/traefik-init/routes.tmpl.yml:ro
+      - ./traefik/entrypoint.sh:/etc/traefik-init/entrypoint.sh:ro
     networks:
       - iot
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.traefik-dashboard.rule=Host(`traefik.test-bench.iotstack`)
-      - traefik.http.routers.traefik-dashboard.entrypoints=websecure
-      - traefik.http.routers.traefik-dashboard.tls=true
-      - traefik.http.routers.traefik-dashboard.service=api@internal
-      - traefik.http.routers.traefik-dashboard.middlewares=admin-auth@file

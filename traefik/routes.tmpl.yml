@@ -1,0 +1,64 @@
+# Template pentru rutele Traefik catre serviciile IoT ale acestui site.
+# Randat in /etc/traefik/dynamic/routes.yml de entrypoint.sh, la fiecare
+# pornire a containerului traefik - __CLUSTER_DOMAIN__ e inlocuit cu
+# valoarea reala a variabilei CLUSTER_DOMAIN (una per site: etaj/cladire).
+#
+# NU sunt etichete Docker (traefik.http.routers.* pe servicii) ca sa evitam
+# un bug Coolify: cand redeployeaza din Git, Coolify dubleaza "$" in orice
+# ${VAR} gasit in interiorul unui bloc "labels:" (indiferent daca variabila
+# are fallback sau nu), stricand orice interpolare acolo - dar NU face asta
+# in afara labels (command:, environment:, ports: raman neatinse). Mutand
+# rutele in acest fisier randat de entrypoint, ocolim complet bug-ul, si in
+# plus Traefik nu mai are nevoie deloc de acces la docker.sock (provider-ul
+# docker e complet dezactivat - vezi docker-compose.yaml).
+http:
+  routers:
+    nodered:
+      rule: "Host(`nodered.__CLUSTER_DOMAIN__`)"
+      entrypoints:
+        - websecure
+      tls: true
+      service: nodered
+      # FARA admin-auth: Node-RED are login propriu (adminAuth in settings.js).
+
+    zigbee2mqtt:
+      rule: "Host(`zigbee2mqtt.__CLUSTER_DOMAIN__`)"
+      entrypoints:
+        - websecure
+      tls: true
+      service: zigbee2mqtt
+      middlewares:
+        - admin-auth@file
+
+    chirpstack:
+      rule: "Host(`chirpstack.__CLUSTER_DOMAIN__`)"
+      entrypoints:
+        - websecure
+      tls: true
+      service: chirpstack
+      # FARA admin-auth: ChirpStack are login propriu (admin/admin implicit).
+
+    traefik-dashboard:
+      rule: "Host(`traefik.__CLUSTER_DOMAIN__`)"
+      entrypoints:
+        - websecure
+      tls: true
+      service: api@internal
+      middlewares:
+        - admin-auth@file
+
+  services:
+    nodered:
+      loadBalancer:
+        servers:
+          - url: "http://nodered:1880"
+
+    zigbee2mqtt:
+      loadBalancer:
+        servers:
+          - url: "http://zigbee2mqtt:8080"
+
+    chirpstack:
+      loadBalancer:
+        servers:
+          - url: "http://chirpstack:8080"
