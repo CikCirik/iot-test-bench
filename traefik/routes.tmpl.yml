@@ -68,6 +68,13 @@ http:
         - websecure
       tls: true
       service: bms-floor
+      
+    bms-master:
+      rule: "Host(`bms-master.__CLUSTER_DOMAIN__`)"
+      entrypoints:
+        - websecure
+      tls: true
+      service: bms-master
 
   services:
     nodered:
@@ -97,3 +104,8 @@ http:
       loadBalancer:
         servers:
           - url: "http://host.docker.internal:4173"
+          
+    bms-master:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:4000"
