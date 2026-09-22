@@ -1,7 +1,7 @@
 # Ghid complet: Coolify + deploy pentru `iot-test-bench`, `agent-ML-realdata` și `SetUp_CL`
 
 Document de referință, pas cu pas, pentru tot ce s-a făcut ca să ajungem la
-starea actuală: Coolify instalat pe reComputer (`172.16.1.120`), cu **trei**
+starea actuală: Coolify instalat pe reComputer (`192.168.21.195`), cu **trei**
 resurse deployate din **trei repo-uri Git separate**:
 
 1. `iot-test-bench` (`github.com/CikCirik/iot-test-bench`) — stack IoT complet
@@ -25,7 +25,7 @@ singur loc controlat.
 ## 0. Arhitectura de ansamblu — ca să nu se piardă contextul
 
 ```
-reComputer (172.16.1.120)
+reComputer (192.168.21.195)
 │
 ├── Coolify (instalare oficială, PaaS) ── dashboard pe :8000, proxy propriu pe :80/:443/:8080
 │     │
@@ -39,7 +39,7 @@ reComputer (172.16.1.120)
 │     └── Resursa "SetUp_CL" (Dockerfile, din repo mihaimurra001/SetUp_CL)
 │           └── un singur container, BMS SetUp - rol floor_manager, publicat pe host :4173
 │                 Se conecteaza la mosquitto-ul din iot-test-bench prin IP-ul
-│                 real al masinii (172.16.1.120:1883), NU host.docker.internal
+│                 real al masinii (192.168.21.195:1883), NU host.docker.internal
 │                 - vezi §6.5, motivul e diferit fata de Traefik.
 │
 └── Traefik-ul din iot-test-bench rutează TOATE domeniile (inclusiv predict.*,
@@ -311,18 +311,18 @@ serviciul respectiv — adaugi o intrare nouă în `traefik/routes.tmpl.yml`
 
 Pe orice mașină de pe care vrei să accesezi serviciile (nu pe reComputer):
 ```
-172.16.1.120   nodered.test-bench.iotstack
-172.16.1.120   zigbee2mqtt.test-bench.iotstack
-172.16.1.120   chirpstack.test-bench.iotstack
-172.16.1.120   traefik.test-bench.iotstack
-172.16.1.120   coolify.test-bench.iotstack
-172.16.1.120   predict.test-bench.iotstack
+192.168.21.195   nodered.test-bench.iotstack
+192.168.21.195   zigbee2mqtt.test-bench.iotstack
+192.168.21.195   chirpstack.test-bench.iotstack
+192.168.21.195   traefik.test-bench.iotstack
+192.168.21.195   coolify.test-bench.iotstack
+192.168.21.195   predict.test-bench.iotstack
 ```
 
 ### 2.9 Verificare finală
 
 ```bash
-curl -sk -o /dev/null -w '%{http_code}\n' --resolve nodered.test-bench.iotstack:9443:172.16.1.120 https://nodered.test-bench.iotstack:9443/
+curl -sk -o /dev/null -w '%{http_code}\n' --resolve nodered.test-bench.iotstack:9443:192.168.21.195 https://nodered.test-bench.iotstack:9443/
 ```
 Repetă pentru fiecare subdomeniu, **din rețea** (nu doar loopback pe
 reComputer) — loopback-ul poate arăta bine chiar și când accesul din rețea nu
@@ -639,7 +639,7 @@ aplicația permite cereri neautentificate doar de pe loopback):
 ```bash
 curl -s -X POST http://127.0.0.1:4173/api/protocols/lorawan/networks \
   -H "Content-Type: application/json" \
-  -d '{"id":"lora_net_default","name":"Rețea LoRaWAN Principală (ChirpStack)","enabled":true,"serverType":"chirpstack","serverUrl":"http://192.168.21.200:8080","brokerUrl":"mqtt://172.16.1.120:1883","baseTopic":"application/+/device/+/event/+"}'
+  -d '{"id":"lora_net_default","name":"Rețea LoRaWAN Principală (ChirpStack)","enabled":true,"serverType":"chirpstack","serverUrl":"http://192.168.21.200:8080","brokerUrl":"mqtt://192.168.21.195:1883","baseTopic":"application/+/device/+/event/+"}'
 ```
 Verifici rezultatul (`connected: true` dacă a mers):
 ```bash
@@ -655,7 +655,7 @@ explicit per-container prin `extra_hosts: host.docker.internal:host-gateway`,
 lucru pe care l-am făcut DOAR pentru containerul Traefik din `iot-test-bench`
 (vezi `docker-compose.yaml`), nu pentru resursele Coolify separate ca aceasta.
 Soluția simplă, fără nicio configurare suplimentară: folosești **IP-ul real
-al mașinii** (`172.16.1.120`), care oricum e adresa la care portul `1883` e
+al mașinii** (`192.168.21.195`), care oricum e adresa la care portul `1883` e
 publicat pe rețea.
 
 `serverUrl` (API-ul REST al ChirpStack, separat de broker-ul MQTT, folosit
@@ -675,7 +675,7 @@ din `hosts`-ul mașinii de pe care accesezi (vezi §2.8, aceeași cauză, doar a
 subdomeniu care încă nu era acolo). Pe Windows: adaugi în
 `C:\Windows\System32\drivers\etc\hosts` (ca administrator):
 ```
-172.16.1.120   bms-floor.test-bench.iotstack
+192.168.21.195   bms-floor.test-bench.iotstack
 ```
 
 ---

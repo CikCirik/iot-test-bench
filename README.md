@@ -5,7 +5,7 @@ ChirpStack) în spatele unui reverse proxy Traefik propriu. Comutare
 `INSTALL_*=true/false` prin profile Docker Compose, ca pe clusterul Swarm.
 
 Repo: `https://github.com/CikCirik/iot-test-bench` (branch `main`).
-Deployat momentan pe reComputer, `172.16.1.120`, prin Coolify.
+Deployat momentan pe reComputer, `192.168.21.195`, prin Coolify.
 
 ## Arhitectură
 
@@ -199,7 +199,7 @@ docker compose restart traefik
    redeploya automat din Git (push → redeploy), deci starea de pe mașină
    se poate schimba fără intervenție manuală:
    ```bash
-   ssh recomputer@172.16.1.120 "cat ~/iot-test-bench/docker-compose.yaml"
+   ssh recomputer@192.168.21.195 "cat ~/iot-test-bench/docker-compose.yaml"
    ```
 2. Editează local, verifică diff-ul.
 3. Commit + push pe `main` — dacă auto-deploy e activ în Coolify, se aplică
@@ -212,7 +212,7 @@ docker compose restart traefik
    ce e pe mașină:
    ```bash
    md5sum docker-compose.yaml .env
-   ssh recomputer@172.16.1.120 "cd ~/iot-test-bench && md5sum docker-compose.yaml .env"
+   ssh recomputer@192.168.21.195 "cd ~/iot-test-bench && md5sum docker-compose.yaml .env"
    ```
 
 ## Comenzi utile
