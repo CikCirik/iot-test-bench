@@ -72,6 +72,8 @@ services:
       # Genereaza automat hash-ul bcrypt din NODERED_AUTH_USER/PASS la fiecare
       # pornire (vezi nodered/settings.js) - NODERED_AUTH_PASS gol = fara login.
       - ./nodered/settings.js:/data/settings.js:ro
+    extra_hosts:
+      - "bmsn.quartzmatrix.ro:192.168.6.100"
     networks:
       - iot
 
