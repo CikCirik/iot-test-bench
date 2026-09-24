@@ -60,7 +60,6 @@ services:
     profiles: ["nodered"]
     restart: unless-stopped
     environment:
-      - TZ=${TZ:-Europe/Bucharest}
       - NODERED_AUTH_USER=${NODERED_AUTH_USER:-admin}
       - NODERED_AUTH_PASS=${NODERED_AUTH_PASS:-}
       # Folosite in flow-uri (function nodes) prin env.get("QLEAP_BASE_URL")
