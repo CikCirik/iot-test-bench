@@ -75,6 +75,7 @@ services:
     extra_hosts:
       - "bmsn.quartzmatrix.ro:192.168.6.100"
       - "predict.test-bench.iotstack:host-gateway"
+      - "bms-floor.test-bench.iotstack:host-gateway"
     networks:
       - iot
 
