@@ -108,6 +108,20 @@ services:
       - "predict.test-bench.iotstack:127.0.0.1"
       - "bms-floor.test-bench.iotstack:127.0.0.1"
 
+  # -------------------- KNX SCANNER (interfata manuala de scanare/detectie) --------------------
+  knx-scanner:
+    build: ./knx-scanner
+    profiles: ["knx-scanner"]
+    restart: unless-stopped
+    # network_mode: host - la fel ca nodered, necesar pentru multicast KNX/IP
+    # fiabil (routing 224.0.23.12:3671) - vezi comentariul detaliat de pe
+    # serviciul nodered mai sus pentru motivul complet.
+    network_mode: host
+    environment:
+      - KNX_OWN_ADDRESS=${KNX_OWN_ADDRESS:-15.15.250}
+      - KNX_LOCAL_IP=${KNX_LOCAL_IP:-192.168.21.195}
+      - PORT=8003
+
   # -------------------- ZIGBEE2MQTT --------------------
   zigbee2mqtt:
     image: koenkk/zigbee2mqtt:latest

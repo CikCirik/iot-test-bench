@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+<meta charset="UTF-8">
+<title>KNX Scanner</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  h1 { font-size: 1.4rem; }
+  form { display: flex; gap: 0.5rem; align-items: end; flex-wrap: wrap; margin-bottom: 1.5rem; }
+  label { display: flex; flex-direction: column; font-size: 0.8rem; color: #555; }
+  input { padding: 0.4rem; width: 5rem; }
+  button { padding: 0.5rem 1rem; background: #2563eb; color: white; border: none; border-radius: 4px; cursor: pointer; }
+  button:disabled { background: #94a3b8; cursor: wait; }
+  table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+  th, td { border: 1px solid #ddd; padding: 0.5rem; text-align: left; font-size: 0.9rem; }
+  th { background: #f3f4f6; }
+  tr.found { cursor: pointer; }
+  tr.found:hover { background: #eff6ff; }
+  #status { color: #555; font-size: 0.9rem; margin-top: 0.5rem; }
+  #details { margin-top: 1.5rem; padding: 1rem; background: #f9fafb; border-radius: 6px; white-space: pre-wrap; font-family: monospace; font-size: 0.85rem; display: none; }
+  .field { margin-bottom: 0.3rem; }
+  .field b { display: inline-block; width: 12rem; }
+</style>
+</head>
+<body>
+
+<h1>KNX Scanner — detecție manuală pe bus</h1>
+
+<form id="scanForm">
+  <label>Area <input type="number" id="area" value="1" min="0" max="15"></label>
+  <label>Line <input type="number" id="line" value="1" min="0" max="15"></label>
+  <label>De la <input type="number" id="start" value="1" min="1" max="255"></label>
+  <label>Până la <input type="number" id="end" value="20" min="1" max="255"></label>
+  <button type="submit" id="scanBtn">Scanează</button>
+</form>
+
+<div id="status"></div>
+
+<table id="resultsTable" style="display:none">
+  <thead><tr><th>Adresă</th><th>Status</th></tr></thead>
+  <tbody id="resultsBody"></tbody>
+</table>
+
+<div id="details"></div>
+
+<script>
+const form = document.getElementById('scanForm');
+const status = document.getElementById('status');
+const table = document.getElementById('resultsTable');
+const body = document.getElementById('resultsBody');
+const details = document.getElementById('details');
+const scanBtn = document.getElementById('scanBtn');
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const area = +document.getElementById('area').value;
+  const line = +document.getElementById('line').value;
+  const start_device = +document.getElementById('start').value;
+  const end_device = +document.getElementById('end').value;
+
+  scanBtn.disabled = true;
+  status.textContent = `Scanez ${area}.${line}.${start_device} - ${area}.${line}.${end_device}... (poate dura un minut)`;
+  body.innerHTML = '';
+  table.style.display = 'none';
+  details.style.display = 'none';
+
+  try {
+    const res = await fetch('/api/scan', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({area, line, start_device, end_device, delay: 0.1})
+    });
+    const data = await res.json();
+    status.textContent = `Gata — verificate ${data.checked}, găsite ${data.found.length}.`;
+    table.style.display = 'table';
+    for (const addr of data.found) {
+      const tr = document.createElement('tr');
+      tr.className = 'found';
+      tr.innerHTML = `<td>${addr}</td><td>găsit — click pentru detalii</td>`;
+      tr.addEventListener('click', () => showDetails(addr));
+      body.appendChild(tr);
+    }
+    if (data.found.length === 0) {
+      status.textContent += ' Niciun dispozitiv găsit în interval.';
+    }
+  } catch (err) {
+    status.textContent = 'Eroare: ' + err;
+  } finally {
+    scanBtn.disabled = false;
+  }
+});
+
+async function showDetails(addr) {
+  details.style.display = 'block';
+  details.textContent = `Citesc ${addr}...`;
+  try {
+    const res = await fetch(`/api/device/${addr}`);
+    const d = await res.json();
+    let html = `<div class="field"><b>Adresă</b> ${d.address}</div>`;
+    html += `<div class="field"><b>Mask version</b> ${d.mask_version ?? 'N/A'}</div>`;
+    html += `<div class="field"><b>Manufacturer ID</b> ${d.manufacturer_id ?? 'N/A'}</div>`;
+    html += `<div class="field"><b>Manufacturer</b> ${d.manufacturer_name ?? 'N/A'}</div>`;
+    html += `<div class="field"><b>Serial</b> ${d.serial ?? 'N/A'}</div>`;
+    html += `<div class="field"><b>Order info (hex)</b> ${d.order_info_hex ?? 'N/A'}</div>`;
+    html += `<div class="field"><b>Order info (ASCII)</b> ${d.order_info_ascii ?? '(nu e text lizibil)'}</div>`;
+    html += `<div class="field"><b>Hardware type</b> ${d.hardware_type ?? 'N/A'}</div>`;
+    html += `<div class="field"><b>Firmware revision</b> ${d.firmware_revision ?? 'N/A'}</div>`;
+    html += `<div class="field"><b>Max APDU length</b> ${d.max_apdu_length ?? 'N/A'}</div>`;
+    html += `<br><button id="objBtn">Explorează obiecte interne</button>`;
+    details.innerHTML = html;
+    document.getElementById('objBtn').addEventListener('click', () => showObjects(addr));
+  } catch (err) {
+    details.textContent = 'Eroare la citire: ' + err;
+  }
+}
+
+async function showObjects(addr) {
+  details.textContent = `Explorez obiectele lui ${addr}... (poate dura 10-30s)`;
+  try {
+    const res = await fetch(`/api/device/${addr}/objects`);
+    const d = await res.json();
+    details.textContent = JSON.stringify(d, null, 2);
+  } catch (err) {
+    details.textContent = 'Eroare: ' + err;
+  }
+}
+</script>
+
+</body>
+</html>

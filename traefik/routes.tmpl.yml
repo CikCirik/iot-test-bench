@@ -76,6 +76,17 @@ http:
       tls: true
       service: bms-master
 
+    knx-scanner:
+      # Interfata de scanare/detectie manuala KNX (knx-scanner/, in acest
+      # repo) - fara login propriu, deci admin-auth e obligatoriu.
+      rule: "Host(`knx.__CLUSTER_DOMAIN__`)"
+      entrypoints:
+        - websecure
+      tls: true
+      service: knx-scanner
+      middlewares:
+        - admin-auth@file
+
   services:
     nodered:
       # nodered ruleaza cu network_mode: host (necesar pentru multicast
@@ -113,3 +124,9 @@ http:
       loadBalancer:
         servers:
           - url: "http://host.docker.internal:4000"
+
+    knx-scanner:
+      # network_mode: host (ca nodered) - portul 8003 legat direct pe gazda.
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:8003"
