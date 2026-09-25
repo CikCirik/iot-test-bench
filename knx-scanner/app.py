@@ -93,6 +93,57 @@ def _decode_order_info(raw: bytes | None) -> str | None:
     return None
 
 
+# --------------------------------------------------------------------------
+# Decodare Group Object Table (Object Type 9), pentru dispozitive System B
+# (mask 0x0*7B0 si variante). Format confirmat empiric (validat pe un
+# controller DALI cunoscut - 16 din 16 intrari asteptate au iesit exact cum
+# trebuia) + sursa calimero-device (KnxDeviceServiceLogic.java,
+# groupObjectDescriptor() si valueFieldTypeToBits()):
+#   - fiecare intrare = 2 octeti, index 1-based, citit prin A_PropertyValue_Read
+#     pe PID_TABLE (23) al obiectului Group Object Table.
+#   - octet 0 = config: biti 0-1 prioritate, bit 2 = comunicare/enable,
+#     bit 3 = citire/responder (valid doar daca enable), bit 7 = update-on-
+#     response (valid doar daca enable). Bitul de transmit (0x40) NU e
+#     confirmat pentru acest format pe 2 octeti - il raportam brut, neinterpretat.
+#   - octet 1 = cod tip camp -> numar de biti ai valorii (tabel exact).
+# NU da adresa de grup asociata (aia ar necesita Address Table + Association
+# Table, cercetare separata, nefinalizata) si NU da DPT-ul exact (doar
+# dimensiunea in biti - mai multe DPT-uri au aceeasi dimensiune, ex. 5.001 si
+# 5.010 sunt ambele 8 biti).
+# --------------------------------------------------------------------------
+PID_TABLE = 23
+
+TYPE_CODE_TO_BITS = {0: 1, 1: 2, 2: 3, 3: 4, 4: 5, 5: 6, 6: 7, 7: 8, 8: 16,
+                       9: 24, 10: 32, 11: 48, 12: 64, 13: 80, 14: 112}
+
+# Heuristica bits -> familii DPT plauzibile (NU exact, aceeasi limitare ca
+# in calimero: mai multe DPT-uri au aceeasi dimensiune in biti).
+BITS_TO_PLAUSIBLE_DPT = {
+    1: ["1.xxx (switch/bool)"],
+    2: ["2.xxx (control 1 bit + prioritate)"],
+    4: ["3.xxx (dimming control)", "18.xxx (scene control)"],
+    8: ["5.xxx (unsigned 8-bit, ex. 5.001 procent)", "6.xxx (signed 8-bit)", "20.xxx (enum HVAC)"],
+    16: ["7.xxx (unsigned 16-bit)", "8.xxx (signed 16-bit)", "9.xxx (float 16-bit, ex. temperatura)"],
+    32: ["12.xxx (unsigned 32-bit)", "13.xxx (signed 32-bit)", "14.xxx (float 32-bit)"],
+}
+
+
+def _decode_got_entry(raw: bytes) -> dict:
+    config, type_code = raw[0], raw[1]
+    bits = TYPE_CODE_TO_BITS.get(type_code, 2016 if type_code == 255 else max((type_code - 6) * 8, 0))
+    enable = bool(config & 0x04)
+    return {
+        "raw_hex": raw.hex(),
+        "priority": config & 0x03,
+        "communication_enable": enable,
+        "read_responder": enable and bool(config & 0x08),
+        "update_on_response": enable and bool(config & 0x80),
+        "type_code": type_code,
+        "bits": bits,
+        "plausible_dpt": BITS_TO_PLAUSIBLE_DPT.get(bits, [f"necunoscut ({bits} biti)"]),
+    }
+
+
 class ScanRequest(BaseModel):
     area: int
     line: int
@@ -254,3 +305,86 @@ async def device_objects(address: str) -> dict:
     finally:
         await xknx.stop()
     return {"address": address, "objects": objects}
+
+
+@app.get("/api/device/{address}/parameters")
+async def device_parameters(address: str) -> dict:
+    xknx = XKNX(connection_config=_connection_config())
+    await xknx.start()
+    result: dict = {"address": address, "group_object_table_found": False, "entries": []}
+    try:
+        async with xknx.management.connection(IndividualAddress(address)) as conn:
+            got_index: int | None = None
+            for obj_idx in range(0, 15):
+                try:
+                    response = await asyncio.wait_for(
+                        conn.request(
+                            payload=apci.PropertyValueRead(
+                                object_index=obj_idx, property_id=1, count=1, start_index=1
+                            ),
+                            expected=apci.PropertyValueResponse,
+                        ),
+                        timeout=2,
+                    )
+                    if not (isinstance(response.payload, apci.PropertyValueResponse) and response.payload.data):
+                        break
+                    otype = int.from_bytes(response.payload.data, "big")
+                    if otype == 9:
+                        got_index = obj_idx
+                        break
+                except Exception:
+                    break
+                await asyncio.sleep(0.05)
+
+            if got_index is None:
+                result["message"] = (
+                    "Acest dispozitiv nu are un Group Object Table modern (Object Type 9) - "
+                    "foloseste modelul clasic (Address Table + Association Table), care nu poate "
+                    "fi decodificat momentan (necesita citire de memorie bruta, nesuportata de "
+                    "acest dispozitiv, sau cercetare suplimentara pe Address/Association Table)."
+                )
+                return result
+
+            result["group_object_table_found"] = True
+            result["group_object_table_index"] = got_index
+
+            all_data = b""
+            start = 1
+            chunk = 15
+            max_entries = 250
+            while start <= max_entries:
+                n = min(chunk, max_entries - start + 1)
+                try:
+                    response = await asyncio.wait_for(
+                        conn.request(
+                            payload=apci.PropertyValueRead(
+                                object_index=got_index, property_id=PID_TABLE, count=n, start_index=start
+                            ),
+                            expected=apci.PropertyValueResponse,
+                        ),
+                        timeout=3,
+                    )
+                    if isinstance(response.payload, apci.PropertyValueResponse):
+                        if not response.payload.data:
+                            break
+                        all_data += response.payload.data
+                    else:
+                        break
+                except Exception:
+                    break
+                start += n
+                await asyncio.sleep(0.1)
+
+            for i in range(0, len(all_data) - 1, 2):
+                raw = all_data[i:i + 2]
+                if raw == b"\x00\x00":
+                    continue
+                entry_num = i // 2 + 1
+                decoded = _decode_got_entry(raw)
+                decoded["entry"] = entry_num
+                result["entries"].append(decoded)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Nu am putut citi parametrii {address}: {exc}") from exc
+    finally:
+        await xknx.stop()
+    return result

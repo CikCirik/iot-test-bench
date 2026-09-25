@@ -106,9 +106,11 @@ async function showDetails(addr) {
     html += `<div class="field"><b>Hardware type</b> ${d.hardware_type ?? 'N/A'}</div>`;
     html += `<div class="field"><b>Firmware revision</b> ${d.firmware_revision ?? 'N/A'}</div>`;
     html += `<div class="field"><b>Max APDU length</b> ${d.max_apdu_length ?? 'N/A'}</div>`;
-    html += `<br><button id="objBtn">Explorează obiecte interne</button>`;
+    html += `<br><button id="objBtn">Explorează obiecte interne</button> `;
+    html += `<button id="paramBtn">Parametri (Group Object Table)</button>`;
     details.innerHTML = html;
     document.getElementById('objBtn').addEventListener('click', () => showObjects(addr));
+    document.getElementById('paramBtn').addEventListener('click', () => showParameters(addr));
   } catch (err) {
     details.textContent = 'Eroare la citire: ' + err;
   }
@@ -120,6 +122,34 @@ async function showObjects(addr) {
     const res = await fetch(`/api/device/${addr}/objects`);
     const d = await res.json();
     details.textContent = JSON.stringify(d, null, 2);
+  } catch (err) {
+    details.textContent = 'Eroare: ' + err;
+  }
+}
+
+async function showParameters(addr) {
+  details.textContent = `Citesc parametrii lui ${addr}... (poate dura 30-60s)`;
+  try {
+    const res = await fetch(`/api/device/${addr}/parameters`);
+    const d = await res.json();
+    if (!d.group_object_table_found) {
+      details.textContent = d.message ?? 'Nu s-a găsit Group Object Table pe acest dispozitiv.';
+      return;
+    }
+    let html = `<div class="field"><b>Group Object Table</b> găsit la object_index=${d.group_object_table_index}, `
+              + `${d.entries.length} intrări valide</div><br>`;
+    html += `<table><thead><tr><th>Entry</th><th>Prioritate</th><th>Comunicare</th>`
+          + `<th>Citire</th><th>Update</th><th>Biți</th><th>DPT plauzibil</th><th>Raw</th></tr></thead><tbody>`;
+    for (const e of d.entries) {
+      html += `<tr><td>${e.entry}</td><td>${e.priority}</td><td>${e.communication_enable}</td>`
+            + `<td>${e.read_responder}</td><td>${e.update_on_response}</td><td>${e.bits}</td>`
+            + `<td>${e.plausible_dpt.join(', ')}</td><td>${e.raw_hex}</td></tr>`;
+    }
+    html += `</tbody></table>`;
+    html += `<p style="font-size:0.8rem;color:#666">Notă: DPT-ul e o presupunere plauzibilă bazată pe `
+           + `dimensiunea în biți (mai multe DPT-uri au aceeași dimensiune) — nu e adresa de grup exactă `
+           + `(asta necesită Address Table + Association Table, nefinalizat încă).</p>`;
+    details.innerHTML = html;
   } catch (err) {
     details.textContent = 'Eroare: ' + err;
   }
