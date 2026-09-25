@@ -60,13 +60,20 @@ services:
     profiles: ["nodered"]
     restart: unless-stopped
     # network_mode: host (NU networks: [iot]) - necesar pentru KNX/IP prin
-    # multicast (224.0.23.12:3671, vezi node-red-contrib-knx sau similar).
-    # Multicast nu trece fiabil printr-o retea Docker bridge normala, iar
-    # macvlan (varianta "curata") de regula NU functioneaza pe interfete WiFi
-    # (wlan0, cazul reComputer) - driverele resping frame-uri cu alt MAC decat
-    # cel al statiei asociate la AP. Cu host networking, containerul foloseste
-    # direct interfata de retea a gazdei, deci multicast-ul merge la fel ca
-    # pentru orice alt proces pornit direct pe reComputer.
+    # multicast (224.0.23.12:3671, vezi node-red-contrib-knx-ultimate).
+    # Multicast nu trece fiabil printr-o retea Docker bridge normala.
+    #
+    # Motivul istoric al alegerii asta in loc de macvlan: reComputer initial
+    # era pe WiFi (wlan0), unde macvlan de regula NU functioneaza (driverele
+    # resping frame-uri cu alt MAC decat cel al statiei asociate la AP) -
+    # verificat empiric: multicast real (KNX_ROUTING_INDICATION) nu ajungea
+    # deloc pe wlan0, desi conexiunea KNX raporta "connected". reComputer
+    # a fost mutat de atunci pe Ethernet (eth0, IP static 192.168.21.195,
+    # WiFi complet oprit) - pe cablu multicast-ul functioneaza normal, deci
+    # macvlan ar fi acum o varianta viabila. Am pastrat totusi host networking:
+    # deja verificat functional, si schimbarea nu ar aduce niciun beneficiu
+    # real acum (izolarea de retea suplimentara pe care ar oferi-o macvlan
+    # nu e o cerinta aici).
     #
     # Implicatii de retinut:
     #  - NU se mai poate combina cu "networks:" (Compose nu permite ambele pe
