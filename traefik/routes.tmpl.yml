@@ -68,7 +68,7 @@ http:
         - websecure
       tls: true
       service: bms-floor
-      
+
     bms-master:
       rule: "Host(`bms-master.__CLUSTER_DOMAIN__`)"
       entrypoints:
@@ -78,9 +78,13 @@ http:
 
   services:
     nodered:
+      # nodered ruleaza cu network_mode: host (necesar pentru multicast
+      # KNX/IP, vezi docker-compose.yaml) - nu mai e pe reteaua "iot", deci
+      # nu mai poate fi gasit dupa nume de container ca restul serviciilor.
+      # Portul 1880 e legat direct pe gazda.
       loadBalancer:
         servers:
-          - url: "http://nodered:1880"
+          - url: "http://host.docker.internal:1880"
 
     zigbee2mqtt:
       loadBalancer:
@@ -104,7 +108,7 @@ http:
       loadBalancer:
         servers:
           - url: "http://host.docker.internal:4173"
-          
+
     bms-master:
       loadBalancer:
         servers:

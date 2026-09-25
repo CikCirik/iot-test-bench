@@ -59,6 +59,27 @@ services:
     image: nodered/node-red:latest
     profiles: ["nodered"]
     restart: unless-stopped
+    # network_mode: host (NU networks: [iot]) - necesar pentru KNX/IP prin
+    # multicast (224.0.23.12:3671, vezi node-red-contrib-knx sau similar).
+    # Multicast nu trece fiabil printr-o retea Docker bridge normala, iar
+    # macvlan (varianta "curata") de regula NU functioneaza pe interfete WiFi
+    # (wlan0, cazul reComputer) - driverele resping frame-uri cu alt MAC decat
+    # cel al statiei asociate la AP. Cu host networking, containerul foloseste
+    # direct interfata de retea a gazdei, deci multicast-ul merge la fel ca
+    # pentru orice alt proces pornit direct pe reComputer.
+    #
+    # Implicatii de retinut:
+    #  - NU se mai poate combina cu "networks:" (Compose nu permite ambele pe
+    #    acelasi serviciu) - Node-RED nu mai e pe reteaua "iot", deci Traefik
+    #    nu-l mai gaseste dupa nume de container. Vezi traefik/routes.tmpl.yml,
+    #    ruta "nodered" a fost schimbata sa tinteasca host.docker.internal.
+    #  - Portul 1880 e acum legat DIRECT pe gazda (nu prin publicare Compose,
+    #    care oricum nu se poate folosi cu network_mode: host) - verifica
+    #    inainte ca portul sa fie liber pe orice masina pe care redeployezi.
+    #  - /etc/hosts ramane totusi per-container (doar spatiul de retea e
+    #    comun cu gazda, nu tot filesystem-ul), deci extra_hosts de mai jos
+    #    tot e necesar.
+    network_mode: host
     environment:
       - NODERED_AUTH_USER=${NODERED_AUTH_USER:-admin}
       - NODERED_AUTH_PASS=${NODERED_AUTH_PASS:-}
@@ -74,10 +95,11 @@ services:
       - ./nodered/settings.js:/data/settings.js:ro
     extra_hosts:
       - "bmsn.quartzmatrix.ro:192.168.6.100"
-      - "predict.test-bench.iotstack:host-gateway"
-      - "bms-floor.test-bench.iotstack:host-gateway"
-    networks:
-      - iot
+      # 127.0.0.1, NU host-gateway/host.docker.internal: in network_mode host
+      # containerul E gazda din perspectiva de retea, deci porturile publicate
+      # de alte containere (predict:8002, bms-floor:4173) sunt direct pe loopback.
+      - "predict.test-bench.iotstack:127.0.0.1"
+      - "bms-floor.test-bench.iotstack:127.0.0.1"
 
   # -------------------- ZIGBEE2MQTT --------------------
   zigbee2mqtt:
