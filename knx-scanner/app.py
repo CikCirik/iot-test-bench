@@ -307,14 +307,34 @@ async def device_objects(address: str) -> dict:
     return {"address": address, "objects": objects}
 
 
-@app.get("/api/device/{address}/parameters")
-async def device_parameters(address: str) -> dict:
+def _no_got_result(address: str) -> dict:
+    return {
+        "address": address,
+        "group_object_table_found": False,
+        "entries": [],
+        "message": (
+            "Acest dispozitiv nu are un Group Object Table modern (Object Type 9) - "
+            "foloseste modelul clasic (Address Table + Association Table), care nu poate "
+            "fi decodificat momentan (necesita citire de memorie bruta, nesuportata de "
+            "acest dispozitiv, sau cercetare suplimentara pe Address/Association Table)."
+        ),
+    }
+
+
+async def _find_got_index(address: str) -> int | None:
+    """Conexiune separata, doar pentru a localiza Group Object Table (daca exista).
+
+    Unele dispozitive (alta generatie de cip, ex. Intesis) trimit un disconnect
+    explicit cand verific un object_index care nu exista, nu doar tacere -
+    exceptia asta poate scapa din try/except-ul de pe citirea individuala si
+    iese din blocul "async with" la iesire. Izolat aici, intr-o conexiune
+    separata cu propriul try/except larg, ca o deconectare neasteptata sa
+    insemne pur si simplu "nu am gasit", nu o eroare 502 pentru tot endpoint-ul.
+    """
     xknx = XKNX(connection_config=_connection_config())
     await xknx.start()
-    result: dict = {"address": address, "group_object_table_found": False, "entries": []}
     try:
         async with xknx.management.connection(IndividualAddress(address)) as conn:
-            got_index: int | None = None
             for obj_idx in range(0, 15):
                 try:
                     response = await asyncio.wait_for(
@@ -327,27 +347,37 @@ async def device_parameters(address: str) -> dict:
                         timeout=2,
                     )
                     if not (isinstance(response.payload, apci.PropertyValueResponse) and response.payload.data):
-                        break
+                        return None
                     otype = int.from_bytes(response.payload.data, "big")
                     if otype == 9:
-                        got_index = obj_idx
-                        break
+                        return obj_idx
                 except Exception:
-                    break
+                    return None
                 await asyncio.sleep(0.05)
+    except Exception:
+        return None
+    finally:
+        await xknx.stop()
+    return None
 
-            if got_index is None:
-                result["message"] = (
-                    "Acest dispozitiv nu are un Group Object Table modern (Object Type 9) - "
-                    "foloseste modelul clasic (Address Table + Association Table), care nu poate "
-                    "fi decodificat momentan (necesita citire de memorie bruta, nesuportata de "
-                    "acest dispozitiv, sau cercetare suplimentara pe Address/Association Table)."
-                )
-                return result
 
-            result["group_object_table_found"] = True
-            result["group_object_table_index"] = got_index
+@app.get("/api/device/{address}/parameters")
+async def device_parameters(address: str) -> dict:
+    got_index = await _find_got_index(address)
+    if got_index is None:
+        return _no_got_result(address)
 
+    result: dict = {
+        "address": address,
+        "group_object_table_found": True,
+        "group_object_table_index": got_index,
+        "entries": [],
+    }
+
+    xknx = XKNX(connection_config=_connection_config())
+    await xknx.start()
+    try:
+        async with xknx.management.connection(IndividualAddress(address)) as conn:
             all_data = b""
             start = 1
             chunk = 15
@@ -374,17 +404,17 @@ async def device_parameters(address: str) -> dict:
                     break
                 start += n
                 await asyncio.sleep(0.1)
-
-            for i in range(0, len(all_data) - 1, 2):
-                raw = all_data[i:i + 2]
-                if raw == b"\x00\x00":
-                    continue
-                entry_num = i // 2 + 1
-                decoded = _decode_got_entry(raw)
-                decoded["entry"] = entry_num
-                result["entries"].append(decoded)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Nu am putut citi parametrii {address}: {exc}") from exc
+    except Exception:
+        pass  # pastram ce am apucat sa citim pana la eventuala deconectare
     finally:
         await xknx.stop()
+
+    for i in range(0, len(all_data) - 1, 2):
+        raw = all_data[i:i + 2]
+        if raw == b"\x00\x00":
+            continue
+        entry_num = i // 2 + 1
+        decoded = _decode_got_entry(raw)
+        decoded["entry"] = entry_num
+        result["entries"].append(decoded)
     return result
