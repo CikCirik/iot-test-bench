@@ -242,33 +242,21 @@ docker volume inspect <nume-volum> --format '{{.Mountpoint}}'
 sudo rmdir <mountpoint>/<fisierul-problema>
 ```
 
-### 2.6 Basic Auth pentru Traefik — pas manual, o singură dată
+### 2.6 Basic Auth pentru Traefik — automat, la fiecare pornire
 
-Middleware-ul `admin-auth@file` (folosit de `zigbee2mqtt` și de dashboard-ul
-Traefik) **nu se generează automat** la deploy. Se rulează o singură dată,
-manual, echivalentul lui `setup-traefik-auth.sh` din repo — citește
-mountpoint-ul REAL al directorului `/etc/traefik/dynamic` direct din
-containerul Traefik rulant (nu presupune un nume fix de volum, pentru că
-Compose îl prefixează cu numele proiectului, care diferă între deploy manual
-și deploy Coolify):
-```bash
-CID=$(sudo docker ps -qf name=<nume-container-traefik>)
-VOL_DIR=$(sudo docker inspect "$CID" --format '{{range .Mounts}}{{if eq .Destination "/etc/traefik/dynamic"}}{{.Source}}{{end}}{{end}}')
-HASH=$(openssl passwd -apr1 "<TRAEFIK_AUTH_PASS>")
-sudo tee "$VOL_DIR/auth.yml" > /dev/null <<EOF
-http:
-  middlewares:
-    admin-auth:
-      basicAuth:
-        users:
-          - "<TRAEFIK_AUTH_USER>:$HASH"
-EOF
-```
-**De ce doar o dată și nu la fiecare deploy?** Fișierul ăsta trăiește
-într-un volum Docker **named** (`traefik-dynamic`), nu în codul din git — un
-redeploy normal (fără `-v`) NU șterge volumele, deci `auth.yml` supraviețuiește
-la orice redeploy viitor automat. Dispare doar dacă cineva rulează explicit
-`docker compose down -v` sau șterge volumul.
+Middleware-ul `admin-auth@file` (folosit de `zigbee2mqtt`, `predict`,
+`knx-scanner` și de dashboard-ul Traefik) e generat **automat** de
+`traefik/entrypoint.sh` la fiecare pornire a containerului, din
+`TRAEFIK_AUTH_USER`/`TRAEFIK_AUTH_PASS` (`.env`) — la fel ca Node-RED, care
+își generează singur hash-ul din `NODERED_AUTH_USER`/`PASS`. Imaginea
+`traefik:v3.6` nu are `openssl`/`htpasswd` preinstalat, așa că
+`entrypoint.sh` instalează `apache2-utils` (Alpine, ~1-2s) la fiecare
+pornire și generează un hash bcrypt cu `htpasswd -nbB`.
+
+Nu mai există niciun pas manual pe un deploy nou — nici scriptul
+`setup-traefik-auth.sh` (eliminat din repo), nici o comandă separată de
+rulat. Singura cerință: `TRAEFIK_AUTH_USER`/`TRAEFIK_AUTH_PASS` să fie
+setate în Environment Variables (Coolify) sau `.env` (local).
 
 ### 2.7 De ce rutele Traefik nu sunt etichete Docker pe fiecare serviciu
 
@@ -732,7 +720,7 @@ restart pe containerul Traefik) identici cu §4.
 | `port is already allocated` | Deploy vechi manual încă rulează, sau port ales deja ocupat | §2.5-c, §3.4 |
 | Container crash loop, `Is a directory` | Bug Docker: bind mount cu sursă lipsă devine director gol | §2.5-d |
 | Rută 404 deși totul pare corect, doar după redeploy din Git | Coolify dublează `$` în `labels:` | §2.7 |
-| `middleware "admin-auth@file" does not exist` | `setup-traefik-auth.sh` nu a fost rulat pentru ACEA resursă | §2.6 |
+| `middleware "admin-auth@file" does not exist` | `TRAEFIK_AUTH_USER`/`PASS` lipsesc din `.env` (altfel e automat) | §2.6 |
 | `ERROR: Repository not found` la deploy | Private Key greșit selectat/neconfirmat pe acea resursă | §3.3, §5.2 |
 | Doar un container pornește dintr-un compose cu mai multe servicii | Build Pack setat greșit (auto-detect în loc de Docker Compose) | §2.3 |
 | Build eșuează, `COPY` nu găsește fișierele | Base Directory greșit (subfolderul Dockerfile-ului, nu rădăcina repo-ului) | §5.3 |

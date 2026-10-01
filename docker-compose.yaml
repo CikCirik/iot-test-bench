@@ -230,8 +230,8 @@ services:
     volumes:
       - traefik-certs:/etc/traefik/certs:ro
       # FARA :ro pe volumul parinte: fisierele scrise/montate direct in acest
-      # director (auth.yml generat de setup-traefik-auth.sh, routes.yml
-      # randat la pornire, tls-options.yml, coolify.yml) au nevoie ca
+      # director (auth.yml + routes.yml generate automat la pornire de
+      # entrypoint.sh, tls-options.yml, coolify.yml) au nevoie ca
       # directorul parinte sa permita crearea punctelor de montare/scriere -
       # un parinte :ro blocheaza asta.
       - traefik-dynamic:/etc/traefik/dynamic

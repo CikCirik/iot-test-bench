@@ -37,12 +37,11 @@ iot-test-bench/
 ├── .env                          # comutatoare INSTALL_*=true/false + credentiale (NU e in git)
 ├── .gitignore                    # exclude .env din git (secrete)
 ├── up.sh                         # fallback: traduce .env in --profile si porneste manual (fara Coolify)
-├── setup-traefik-auth.sh         # genereaza Basic Auth pentru Traefik (o singura data per deployment)
 ├── nodered/
 │   └── settings.js               # login (adminAuth) generat automat din NODERED_AUTH_USER/PASS
 ├── traefik/
 │   ├── routes.tmpl.yml           # TEMPLATE rute catre serviciile IoT (vezi "De ce routes.tmpl.yml")
-│   ├── entrypoint.sh             # randeaza routes.tmpl.yml -> routes.yml la fiecare pornire
+│   ├── entrypoint.sh             # randeaza routes.tmpl.yml -> routes.yml SI genereaza auth.yml (Basic Auth), la fiecare pornire
 │   ├── tls-options.yml           # forteaza HTTP/1.1 (fix WebSocket Node-RED, vezi comentariul din fisier)
 │   └── coolify.yml               # ruta catre Coolify (instalare separata, port de host 8000)
 └── chirpstack/
@@ -151,13 +150,12 @@ ZIGBEE_ADAPTER=zstack
 COMPOSE_PROFILES=mosquitto,nodered,zigbee2mqtt,chirpstack
 ```
 
-**Basic Auth Traefik** (`admin-auth@file`, folosit de zigbee2mqtt și
-dashboard-ul Traefik): NU e generat automat de Coolify — rulează o dată,
-manual, echivalentul lui `setup-traefik-auth.sh` (vezi scriptul, citește
-mountpoint-ul real din containerul traefik rulant). Fișierul rezultat
-(`auth.yml`) trăiește într-un **volum Docker named** (`traefik-dynamic`),
-deci **supraviețuiește redeploy-urilor normale** (fără `-v`) — nu trebuie
-refăcut la fiecare deploy, doar dacă volumul e șters explicit.
+**Basic Auth Traefik** (`admin-auth@file`, folosit de zigbee2mqtt,
+predict, knx-scanner și dashboard-ul Traefik): generat **automat**, la
+fiecare pornire a containerului `traefik`, de `traefik/entrypoint.sh`, din
+`TRAEFIK_AUTH_USER`/`TRAEFIK_AUTH_PASS` (`.env`) — exact ca Node-RED, care
+își generează singur hash-ul din `NODERED_AUTH_USER`/`PASS`. Nu mai e nevoie
+de niciun pas manual pe deploy-uri noi.
 
 **Empty-directory bug de reținut**: dacă un bind mount (ex.
 `./nodered/settings.js:/data/settings.js:ro`) are sursa lipsă pe disc la
@@ -180,17 +178,15 @@ sudo docker compose up -d`. Nu ar trebui să afecteze `iot-test-bench`
 2. Build Pack = Docker Compose.
 3. Environment Variables = lista de mai sus (cu `CLUSTER_DOMAIN` potrivit
    site-ului).
-4. Deploy. Prima dată, rulează manual `setup-traefik-auth.sh`-ul echivalent
-   (vezi mai sus) pentru Basic Auth.
+4. Deploy — Basic Auth se generează automat la pornirea Traefik-ului
+   (vezi mai sus), fără pas manual.
 5. Adaugă în `/etc/hosts` (mașina de pe care accesezi) câte un record per
    subdomeniu activat, cu IP-ul gateway-ului respectiv.
 
 ### Manual, fără Coolify (fallback, ex. depanare locală)
 ```bash
-chmod +x up.sh setup-traefik-auth.sh
+chmod +x up.sh
 ./up.sh
-./setup-traefik-auth.sh
-docker compose restart traefik
 ```
 
 ## Checklist — mod de lucru pentru schimbări viitoare
