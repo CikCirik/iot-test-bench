@@ -14,9 +14,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import tempfile
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -25,6 +26,8 @@ from xknx.io import ConnectionConfig, ConnectionType
 from xknx.management.procedures import nm_individual_address_check
 from xknx.telegram import apci
 from xknx.telegram.address import IndividualAddress
+from xknxproject import XKNXProj
+from xknxproject.exceptions import InvalidPasswordException
 
 BASE_DIR = Path(__file__).parent
 
@@ -106,10 +109,10 @@ def _decode_order_info(raw: bytes | None) -> str | None:
 #     response (valid doar daca enable). Bitul de transmit (0x40) NU e
 #     confirmat pentru acest format pe 2 octeti - il raportam brut, neinterpretat.
 #   - octet 1 = cod tip camp -> numar de biti ai valorii (tabel exact).
-# NU da adresa de grup asociata (aia ar necesita Address Table + Association
-# Table, cercetare separata, nefinalizata) si NU da DPT-ul exact (doar
-# dimensiunea in biti - mai multe DPT-uri au aceeasi dimensiune, ex. 5.001 si
-# 5.010 sunt ambele 8 biti).
+# NU da DPT-ul exact (doar dimensiunea in biti - mai multe DPT-uri au aceeasi
+# dimensiune, ex. 5.001 si 5.010 sunt ambele 8 biti). Adresa de grup asociata
+# fiecarei intrari vine din Address Table + Association Table, decodate mai
+# jos.
 # --------------------------------------------------------------------------
 PID_TABLE = 23
 
@@ -141,7 +144,48 @@ def _decode_got_entry(raw: bytes) -> dict:
         "type_code": type_code,
         "bits": bits,
         "plausible_dpt": BITS_TO_PLAUSIBLE_DPT.get(bits, [f"necunoscut ({bits} biti)"]),
+        "group_addresses": [],
     }
+
+
+# --------------------------------------------------------------------------
+# Decodare Address Table (Object Type 1) + Association Table (Object Type 2),
+# pentru a lega fiecare intrare din Group Object Table de adresa de grup ei
+# reala. Format confirmat empiric (validat pe acelasi controller DALI - toate
+# cele 15 asocieri citite s-au potrivit exact, incrucisat, intre cele 3
+# tabele) + sursa calimero-device pentru principiul general (Address Table =
+# lista de GA-uri fizice ale dispozitivului, Association Table = leaga
+# indexul din Address Table de un obiect din Group Object Table):
+#   - Address Table: intrari de 2 octeti fiecare, index 1-based, FARA header/
+#     count la inceput - direct adrese de grup brute (16-bit), consecutive.
+#   - Association Table: intrari de 4 octeti fiecare: primii 2 octeti = index
+#     1-based in Address Table, urmatorii 2 octeti = numarul intrarii (1-based)
+#     din Group Object Table (acelasi numar folosit de _decode_got_entry).
+# --------------------------------------------------------------------------
+
+
+def _ga_str(raw_ga: int) -> str:
+    return f"{(raw_ga >> 11) & 0x1F}/{(raw_ga >> 8) & 0x7}/{raw_ga & 0xFF}"
+
+
+def _decode_address_table(raw: bytes) -> dict[int, int]:
+    table: dict[int, int] = {}
+    for i in range(0, len(raw) - 1, 2):
+        raw_ga = int.from_bytes(raw[i:i + 2], "big")
+        if raw_ga:
+            table[i // 2 + 1] = raw_ga
+    return table
+
+
+def _decode_association_table(raw: bytes) -> list[dict]:
+    entries: list[dict] = []
+    for i in range(0, len(raw) - 3, 4):
+        addr_idx = int.from_bytes(raw[i:i + 2], "big")
+        got_entry = int.from_bytes(raw[i + 2:i + 4], "big")
+        if addr_idx == 0 and got_entry == 0:
+            continue
+        entries.append({"address_table_index": addr_idx, "group_object_entry": got_entry})
+    return entries
 
 
 class ScanRequest(BaseModel):
@@ -150,6 +194,39 @@ class ScanRequest(BaseModel):
     start_device: int = 1
     end_device: int = 255
     delay: float = 0.1
+
+
+# --------------------------------------------------------------------------
+# Import proiect ETS (.knxproj) - sursa reala de adevar pentru semantica
+# (nume + DPT + adresa de grup per obiect de comunicare al fiecarui
+# dispozitiv). Scanarea bus-ului nu poate produce niciodata asta singura -
+# validat azi (16/16 exact match) pe un proiect ETS real, exportat curent.
+# Proiectul parsat se tine in memorie (un singur proiect activ per instanta
+# de serviciu - unealta e folosita manual, de un singur operator).
+# --------------------------------------------------------------------------
+_PROJECT: dict | None = None
+
+
+def _format_dpt(dpt: dict | None) -> str | None:
+    if not dpt:
+        return None
+    main = dpt.get("main")
+    sub = dpt.get("sub")
+    if main is None:
+        return None
+    if sub is None:
+        return str(main)
+    return f"{main}.{sub:03d}"
+
+
+def _project_device_summary(address: str, dev: dict) -> dict:
+    return {
+        "individual_address": address,
+        "name": dev.get("name"),
+        "manufacturer_name": dev.get("manufacturer_name"),
+        "order_number": dev.get("order_number"),
+        "communication_objects": len(dev.get("communication_object_ids", [])),
+    }
 
 
 app = FastAPI(title="KNX Scanner")
@@ -164,6 +241,160 @@ async def index() -> FileResponse:
 async def health() -> dict:
     return {"status": "ok", "own_address": OWN_INDIVIDUAL_ADDRESS, "local_ip": LOCAL_IP,
              "manufacturers_loaded": len(MANUFACTURERS)}
+
+
+@app.post("/api/project/upload")
+async def project_upload(file: UploadFile = File(...), password: str = Form("")) -> dict:
+    global _PROJECT
+    raw = await file.read()
+    with tempfile.NamedTemporaryFile(suffix=".knxproj", delete=True) as tmp:
+        tmp.write(raw)
+        tmp.flush()
+        try:
+            parsed = XKNXProj(path=tmp.name, password=password or None).parse()
+        except InvalidPasswordException as exc:
+            raise HTTPException(status_code=400, detail="Parola proiectului e gresita sau lipseste.") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Nu am putut parsa proiectul: {exc}") from exc
+    _PROJECT = parsed
+    info = parsed.get("info", {})
+    return {
+        "name": info.get("name"),
+        "last_modified": info.get("last_modified"),
+        "created_by": info.get("created_by"),
+        "devices_count": len(parsed.get("devices", {})),
+        "group_addresses_count": len(parsed.get("group_addresses", {})),
+    }
+
+
+@app.get("/api/project/status")
+async def project_status() -> dict:
+    if _PROJECT is None:
+        return {"loaded": False}
+    info = _PROJECT.get("info", {})
+    return {
+        "loaded": True,
+        "name": info.get("name"),
+        "last_modified": info.get("last_modified"),
+        "devices_count": len(_PROJECT.get("devices", {})),
+        "group_addresses_count": len(_PROJECT.get("group_addresses", {})),
+    }
+
+
+@app.get("/api/project/devices")
+async def project_devices() -> dict:
+    if _PROJECT is None:
+        raise HTTPException(status_code=404, detail="Niciun proiect ETS incarcat inca.")
+    devices = _PROJECT.get("devices", {})
+    return {"devices": [_project_device_summary(addr, dev) for addr, dev in sorted(devices.items())]}
+
+
+@app.get("/api/project/device/{address}")
+async def project_device(address: str) -> dict:
+    if _PROJECT is None:
+        raise HTTPException(status_code=404, detail="Niciun proiect ETS incarcat inca.")
+    devices = _PROJECT.get("devices", {})
+    dev = devices.get(address)
+    if dev is None:
+        raise HTTPException(status_code=404, detail=f"Adresa {address} nu exista in proiectul ETS incarcat.")
+
+    co_dict = _PROJECT.get("communication_objects", {})
+    objects = []
+    for cid in dev.get("communication_object_ids", []):
+        co = co_dict.get(cid)
+        if not co:
+            continue
+        flags = co.get("flags", {})
+        objects.append({
+            "id": cid,
+            "name": co.get("name"),
+            "text": co.get("text"),
+            "function_text": co.get("function_text"),
+            "dpt": _format_dpt(co.get("dpts")[0]) if co.get("dpts") else None,
+            "object_size": co.get("object_size"),
+            "flags": flags,
+            "group_addresses": co.get("group_address_links", []),
+        })
+
+    return {
+        "individual_address": address,
+        "name": dev.get("name"),
+        "manufacturer_name": dev.get("manufacturer_name"),
+        "order_number": dev.get("order_number"),
+        "hardware_name": dev.get("hardware_name"),
+        "communication_objects": objects,
+    }
+
+
+# --------------------------------------------------------------------------
+# Config final - subsetul de obiecte de comunicare pe care operatorul le
+# alege manual din proiectul ETS (pas 3 din flow: import -> scanare -> alocare).
+# Persistat pe disc (nu doar in memorie ca proiectul ETS) intr-un volum Docker
+# dedicat, ca sa supravietuiasca unui restart/redeploy al containerului -
+# spre deosebire de proiectul incarcat, care e ok sa se piarda.
+# --------------------------------------------------------------------------
+DATA_DIR = Path(os.environ.get("KNX_DATA_DIR", "/app/data"))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+CONFIG_FILE = DATA_DIR / "config.json"
+_config_lock = asyncio.Lock()
+
+
+def _load_config() -> dict:
+    if CONFIG_FILE.exists():
+        try:
+            with open(CONFIG_FILE, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"entries": {}}
+
+
+def _save_config(config: dict) -> None:
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+
+class ConfigEntryIn(BaseModel):
+    id: str
+    individual_address: str
+    device_name: str | None = None
+    group_addresses: list[str] = []
+    dpt: str | None = None
+    object_size: str | None = None
+    flags: dict = {}
+    label: str = ""
+    room: str = ""
+
+
+class ConfigEntriesIn(BaseModel):
+    entries: list[ConfigEntryIn]
+
+
+@app.get("/api/config")
+async def get_config() -> dict:
+    config = _load_config()
+    return {"entries": list(config.get("entries", {}).values())}
+
+
+@app.post("/api/config/entries")
+async def upsert_config_entries(payload: ConfigEntriesIn) -> dict:
+    async with _config_lock:
+        config = _load_config()
+        entries = config.setdefault("entries", {})
+        for e in payload.entries:
+            entries[e.id] = e.model_dump()
+        _save_config(config)
+        return {"entries": list(entries.values())}
+
+
+@app.delete("/api/config/entries/{entry_id:path}")
+async def delete_config_entry(entry_id: str) -> dict:
+    async with _config_lock:
+        config = _load_config()
+        entries = config.get("entries", {})
+        entries.pop(entry_id, None)
+        _save_config(config)
+        return {"entries": list(entries.values())}
 
 
 @app.post("/api/scan")
@@ -321,8 +552,8 @@ def _no_got_result(address: str) -> dict:
     }
 
 
-async def _find_got_index(address: str) -> int | None:
-    """Conexiune separata, doar pentru a localiza Group Object Table (daca exista).
+async def _find_object_index(address: str, object_type: int) -> int | None:
+    """Conexiune separata, doar pentru a localiza un Object Type dat (daca exista).
 
     Unele dispozitive (alta generatie de cip, ex. Intesis) trimit un disconnect
     explicit cand verific un object_index care nu exista, nu doar tacere -
@@ -330,6 +561,9 @@ async def _find_got_index(address: str) -> int | None:
     iese din blocul "async with" la iesire. Izolat aici, intr-o conexiune
     separata cu propriul try/except larg, ca o deconectare neasteptata sa
     insemne pur si simplu "nu am gasit", nu o eroare 502 pentru tot endpoint-ul.
+    Fiecare tip de obiect cautat (Address Table=1, Association Table=2, Group
+    Object Table=9) foloseste propria conexiune izolata - la fel ca citirea
+    propriu-zisa a continutului (vezi _read_got_raw / _read_indexed_table_raw).
     """
     xknx = XKNX(connection_config=_connection_config())
     await xknx.start()
@@ -349,7 +583,7 @@ async def _find_got_index(address: str) -> int | None:
                     if not (isinstance(response.payload, apci.PropertyValueResponse) and response.payload.data):
                         return None
                     otype = int.from_bytes(response.payload.data, "big")
-                    if otype == 9:
+                    if otype == object_type:
                         return obj_idx
                 except Exception:
                     return None
@@ -361,11 +595,151 @@ async def _find_got_index(address: str) -> int | None:
     return None
 
 
+async def _read_got_raw(address: str, object_index: int) -> bytes:
+    """Citeste PID_TABLE al Group Object Table, in propria conexiune izolata.
+
+    GOT e un array de dimensiune fixa (padded) - sloturile neconfigurate
+    intorc 2 octeti de zero, nu lipsesc din raspuns - asa ca citim pana la un
+    plafon fix (250) cu bucati de 15, fara sa avem nevoie de un header de
+    count la start_index=0 (nu s-a gasit unul pe GOT; spre deosebire de
+    Address/Association Table, vezi _read_indexed_table_raw).
+    """
+    xknx = XKNX(connection_config=_connection_config())
+    await xknx.start()
+    all_data = b""
+    try:
+        async with xknx.management.connection(IndividualAddress(address)) as conn:
+            start, chunk, max_entries = 1, 15, 250
+            while start <= max_entries:
+                n = min(chunk, max_entries - start + 1)
+                try:
+                    response = await asyncio.wait_for(
+                        conn.request(
+                            payload=apci.PropertyValueRead(
+                                object_index=object_index, property_id=PID_TABLE, count=n, start_index=start
+                            ),
+                            expected=apci.PropertyValueResponse,
+                        ),
+                        timeout=3,
+                    )
+                    if isinstance(response.payload, apci.PropertyValueResponse) and response.payload.data:
+                        all_data += response.payload.data
+                    else:
+                        break
+                except Exception:
+                    break
+                start += n
+                await asyncio.sleep(0.15)
+    except Exception:
+        pass  # pastram ce am apucat sa citim pana la eventuala deconectare
+    finally:
+        await xknx.stop()
+    return all_data
+
+
+async def _read_indexed_table_raw(address: str, object_index: int, max_chunk: int) -> bytes:
+    """Citeste PID_TABLE al Address Table / Association Table, in propria
+    conexiune izolata.
+
+    Spre deosebire de GOT, aceste doua tabele NU sunt array-uri padded - au
+    un header real la start_index=0 (2 octeti = numarul de intrari valide,
+    validat pe mai multe dispozitive: 0x0010=16 pe Address+Association Table
+    ale unui controller DALI cunoscut, 0x0005=5 pe Address Table a doua
+    dispozitive Weinzierl). Root cause al problemei de fiabilitate gasite
+    initial: dispozitivele testate REFUZA (raspuns gol, count=0) orice cerere
+    care cere mai multe elemente decat mai raman valide de la start_index dat
+    - de-asta un plafon de citire ghicit orbeste (15, sau chiar 5) esua in
+    functie de cate intrari avea de fapt tabelul. Solutia corecta: citim
+    header-ul intai, apoi cerem exact atatea cate stim sigur ca exista, in
+    bucati de maxim `max_chunk` care nu depasesc niciodata restul real.
+    Daca header-ul nu arata ca un numar plauzibil de intrari (ex. dispozitive
+    cu model de tabel diferit/mai vechi, precum 1.1.1/1.1.3 - Siemens, dar
+    fara Group Object Table), consideram tabelul necitit in acest format si
+    intoarcem gol, in loc sa ghicim gresit.
+    """
+    xknx = XKNX(connection_config=_connection_config())
+    await xknx.start()
+    all_data = b""
+    try:
+        async with xknx.management.connection(IndividualAddress(address)) as conn:
+            try:
+                header_response = await asyncio.wait_for(
+                    conn.request(
+                        payload=apci.PropertyValueRead(
+                            object_index=object_index, property_id=PID_TABLE, count=1, start_index=0
+                        ),
+                        expected=apci.PropertyValueResponse,
+                    ),
+                    timeout=3,
+                )
+                header = header_response.payload.data if isinstance(
+                    header_response.payload, apci.PropertyValueResponse
+                ) else None
+            except Exception:
+                header = None
+            total = int.from_bytes(header, "big") if header else None
+            if total is None or not (0 < total <= 1024):
+                return b""
+            await asyncio.sleep(0.15)
+
+            start = 1
+            while start <= total:
+                n = min(max_chunk, total - start + 1)
+                try:
+                    response = await asyncio.wait_for(
+                        conn.request(
+                            payload=apci.PropertyValueRead(
+                                object_index=object_index, property_id=PID_TABLE, count=n, start_index=start
+                            ),
+                            expected=apci.PropertyValueResponse,
+                        ),
+                        timeout=3,
+                    )
+                    if isinstance(response.payload, apci.PropertyValueResponse) and response.payload.data:
+                        all_data += response.payload.data
+                    else:
+                        break
+                except Exception:
+                    break
+                start += n
+                await asyncio.sleep(0.15)
+    except Exception:
+        pass  # pastram ce am apucat sa citim pana la eventuala deconectare
+    finally:
+        await xknx.stop()
+    return all_data
+
+
+async def _classic_fallback(address: str) -> dict:
+    """Dispozitiv fara Group Object Table (model clasic) - incercam macar Address Table."""
+    addr_index = await _find_object_index(address, 1)
+    if addr_index is None:
+        return _no_got_result(address)
+    addr_raw = await _read_indexed_table_raw(address, addr_index, max_chunk=15)
+    addr_table = _decode_address_table(addr_raw)
+    if not addr_table:
+        return _no_got_result(address)
+    return {
+        "address": address,
+        "group_object_table_found": False,
+        "address_table_index": addr_index,
+        "group_addresses": [_ga_str(ga) for ga in addr_table.values()],
+        "entries": [],
+        "message": (
+            "Acest dispozitiv nu are Group Object Table (Object Type 9) - foloseste "
+            "modelul clasic. Am putut citi Address Table (lista de adrese de grup "
+            "folosite de dispozitiv), dar nu si asocierea cu parametrii/DPT "
+            "(Application Program-ul clasic nu expune asocierea generic, ci doar "
+            "per-producator)."
+        ),
+    }
+
+
 @app.get("/api/device/{address}/parameters")
 async def device_parameters(address: str) -> dict:
-    got_index = await _find_got_index(address)
+    got_index = await _find_object_index(address, 9)
     if got_index is None:
-        return _no_got_result(address)
+        return await _classic_fallback(address)
 
     result: dict = {
         "address": address,
@@ -374,47 +748,37 @@ async def device_parameters(address: str) -> dict:
         "entries": [],
     }
 
-    xknx = XKNX(connection_config=_connection_config())
-    await xknx.start()
-    try:
-        async with xknx.management.connection(IndividualAddress(address)) as conn:
-            all_data = b""
-            start = 1
-            chunk = 15
-            max_entries = 250
-            while start <= max_entries:
-                n = min(chunk, max_entries - start + 1)
-                try:
-                    response = await asyncio.wait_for(
-                        conn.request(
-                            payload=apci.PropertyValueRead(
-                                object_index=got_index, property_id=PID_TABLE, count=n, start_index=start
-                            ),
-                            expected=apci.PropertyValueResponse,
-                        ),
-                        timeout=3,
-                    )
-                    if isinstance(response.payload, apci.PropertyValueResponse):
-                        if not response.payload.data:
-                            break
-                        all_data += response.payload.data
-                    else:
-                        break
-                except Exception:
-                    break
-                start += n
-                await asyncio.sleep(0.1)
-    except Exception:
-        pass  # pastram ce am apucat sa citim pana la eventuala deconectare
-    finally:
-        await xknx.stop()
-
-    for i in range(0, len(all_data) - 1, 2):
-        raw = all_data[i:i + 2]
+    got_raw = await _read_got_raw(address, got_index)
+    got_entries: dict[int, dict] = {}
+    for i in range(0, len(got_raw) - 1, 2):
+        raw = got_raw[i:i + 2]
         if raw == b"\x00\x00":
             continue
         entry_num = i // 2 + 1
         decoded = _decode_got_entry(raw)
         decoded["entry"] = entry_num
+        got_entries[entry_num] = decoded
         result["entries"].append(decoded)
+
+    addr_index = await _find_object_index(address, 1)
+    assoc_index = await _find_object_index(address, 2)
+    result["address_table_index"] = addr_index
+    result["association_table_index"] = assoc_index
+    if addr_index is not None and assoc_index is not None:
+        addr_table = _decode_address_table(await _read_indexed_table_raw(address, addr_index, max_chunk=15))
+        associations = _decode_association_table(
+            await _read_indexed_table_raw(address, assoc_index, max_chunk=5)
+        )
+        result["address_table_entries"] = len(addr_table)
+        result["associations_found"] = len(associations)
+        for assoc in associations:
+            ga_raw = addr_table.get(assoc["address_table_index"])
+            entry = got_entries.get(assoc["group_object_entry"])
+            if ga_raw is not None and entry is not None:
+                entry["group_addresses"].append(_ga_str(ga_raw))
+    else:
+        result["note"] = (
+            "Address Table / Association Table nu au fost gasite - adresele de "
+            "grup nu au putut fi asociate cu parametrii (raman doar biti/DPT plauzibil)."
+        )
     return result

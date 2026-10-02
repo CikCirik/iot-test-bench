@@ -26,6 +26,25 @@
 
 <h1>KNX Scanner — detecție manuală pe bus</h1>
 
+<h2>1. Proiect ETS (sursa de adevăr pentru nume/DPT/adrese de grup)</h2>
+
+<form id="projectForm">
+  <label>Fișier .knxproj <input type="file" id="projectFile" accept=".knxproj" required></label>
+  <label>Parolă proiect <input type="password" id="projectPassword" style="width:8rem"></label>
+  <button type="submit" id="projectBtn">Încarcă proiect</button>
+</form>
+
+<div id="projectStatus"></div>
+
+<table id="projectTable" style="display:none">
+  <thead><tr><th>Adresă</th><th>Nume</th><th>Producător</th><th>Order number</th><th>Obiecte comunicare</th></tr></thead>
+  <tbody id="projectBody"></tbody>
+</table>
+
+<div id="projectDetails"></div>
+
+<h2>2. Scanare bus (prezență live)</h2>
+
 <form id="scanForm">
   <label>Area <input type="number" id="area" value="1" min="0" max="15"></label>
   <label>Line <input type="number" id="line" value="1" min="0" max="15"></label>
@@ -43,7 +62,158 @@
 
 <div id="details"></div>
 
+<h2>3. Config final (obiecte alocate manual)</h2>
+
+<div id="configStatus"></div>
+
+<table id="configTable" style="display:none">
+  <thead><tr><th>Adresă</th><th>Dispozitiv</th><th>Adresă grup</th><th>DPT</th><th>Etichetă</th><th>Cameră</th><th></th></tr></thead>
+  <tbody id="configBody"></tbody>
+</table>
+
+<button id="downloadConfigBtn" style="display:none; margin-top:0.5rem">Descarcă JSON</button>
+
 <script>
+const projectForm = document.getElementById('projectForm');
+const projectBtn = document.getElementById('projectBtn');
+const projectStatus = document.getElementById('projectStatus');
+const projectTable = document.getElementById('projectTable');
+const projectBody = document.getElementById('projectBody');
+const projectDetails = document.getElementById('projectDetails');
+let projectDeviceMap = {};
+
+function projectStatusText(s) {
+  return `Proiect „${s.name}" încărcat — ${s.devices_count} dispozitive, `
+       + `${s.group_addresses_count} adrese de grup (ultima modificare: ${s.last_modified}).`;
+}
+
+async function loadProjectDevices() {
+  const res = await fetch('/api/project/devices');
+  const data = await res.json();
+  projectDeviceMap = {};
+  projectBody.innerHTML = '';
+  projectTable.style.display = 'table';
+  for (const d of data.devices) {
+    projectDeviceMap[d.individual_address] = d;
+    const tr = document.createElement('tr');
+    tr.className = 'found';
+    tr.innerHTML = `<td>${d.individual_address}</td><td>${d.name ?? ''}</td>`
+                 + `<td>${d.manufacturer_name ?? ''}</td><td>${d.order_number ?? ''}</td>`
+                 + `<td>${d.communication_objects}</td>`;
+    tr.addEventListener('click', () => showProjectDeviceDetails(d.individual_address));
+    projectBody.appendChild(tr);
+  }
+}
+
+let currentProjectDevice = null;
+
+async function showProjectDeviceDetails(addr) {
+  projectDetails.style.display = 'block';
+  projectDetails.textContent = `Citesc ${addr} din proiect...`;
+  try {
+    const res = await fetch(`/api/project/device/${addr}`);
+    const d = await res.json();
+    currentProjectDevice = d;
+    let html = `<div class="field"><b>Adresă</b> ${d.individual_address}</div>`;
+    html += `<div class="field"><b>Nume</b> ${d.name ?? ''}</div>`;
+    html += `<div class="field"><b>Producător</b> ${d.manufacturer_name ?? ''}</div>`;
+    html += `<div class="field"><b>Order number</b> ${d.order_number ?? ''}</div><br>`;
+    html += `<table><thead><tr><th></th><th>Obiect</th><th>Pagină/Canal</th><th>DPT</th>`
+          + `<th>Mărime</th><th>R/W</th><th>Adresă grup</th><th>Etichetă</th></tr></thead><tbody>`;
+    for (const co of d.communication_objects) {
+      const rw = (co.flags?.read ? 'R' : '-') + (co.flags?.write ? 'W' : '-');
+      html += `<tr>`
+            + `<td><input type="checkbox" class="co-pick" data-id="${co.id}"></td>`
+            + `<td>${co.name ?? ''}</td><td>${co.text ?? ''}</td><td>${co.dpt ?? ''}</td>`
+            + `<td>${co.object_size ?? ''}</td><td>${rw}</td><td><b>${(co.group_addresses||[]).join(', ')}</b></td>`
+            + `<td><input type="text" class="co-label" data-id="${co.id}" placeholder="ex: Sala X - LED" style="width:10rem"></td>`
+            + `</tr>`;
+    }
+    html += `</tbody></table>`;
+    html += `<br><button id="addToConfigBtn">Adaugă selecția în config</button>`;
+    projectDetails.innerHTML = html;
+    document.getElementById('addToConfigBtn').addEventListener('click', addSelectedToConfig);
+  } catch (err) {
+    projectDetails.textContent = 'Eroare: ' + err;
+  }
+}
+
+async function addSelectedToConfig() {
+  if (!currentProjectDevice) return;
+  const checked = projectDetails.querySelectorAll('.co-pick:checked');
+  if (checked.length === 0) {
+    alert('Bifează cel puțin un obiect.');
+    return;
+  }
+  const byId = {};
+  for (const co of currentProjectDevice.communication_objects) byId[co.id] = co;
+
+  const entries = [];
+  for (const cb of checked) {
+    const id = cb.dataset.id;
+    const co = byId[id];
+    const labelInput = projectDetails.querySelector(`.co-label[data-id="${id}"]`);
+    entries.push({
+      id,
+      individual_address: currentProjectDevice.individual_address,
+      device_name: currentProjectDevice.name,
+      group_addresses: co.group_addresses || [],
+      dpt: co.dpt,
+      object_size: co.object_size,
+      flags: co.flags || {},
+      label: labelInput ? labelInput.value : '',
+      room: '',
+    });
+  }
+
+  await fetch('/api/config/entries', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({entries}),
+  });
+  await loadConfig();
+}
+
+projectForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const fileInput = document.getElementById('projectFile');
+  const password = document.getElementById('projectPassword').value;
+  if (!fileInput.files.length) return;
+
+  projectBtn.disabled = true;
+  projectStatus.textContent = 'Încarc și parsez proiectul...';
+  const formData = new FormData();
+  formData.append('file', fileInput.files[0]);
+  formData.append('password', password);
+
+  try {
+    const res = await fetch('/api/project/upload', { method: 'POST', body: formData });
+    if (!res.ok) {
+      const err = await res.json();
+      projectStatus.textContent = 'Eroare: ' + (err.detail ?? res.statusText);
+      return;
+    }
+    const data = await res.json();
+    projectStatus.textContent = projectStatusText(data);
+    await loadProjectDevices();
+  } catch (err) {
+    projectStatus.textContent = 'Eroare: ' + err;
+  } finally {
+    projectBtn.disabled = false;
+  }
+});
+
+(async function initProjectStatus() {
+  try {
+    const res = await fetch('/api/project/status');
+    const s = await res.json();
+    if (s.loaded) {
+      projectStatus.textContent = projectStatusText(s);
+      await loadProjectDevices();
+    }
+  } catch (err) { /* ignoram - proiectul e optional */ }
+})();
+
 const form = document.getElementById('scanForm');
 const status = document.getElementById('status');
 const table = document.getElementById('resultsTable');
@@ -74,9 +244,11 @@ form.addEventListener('submit', async (e) => {
     status.textContent = `Gata — verificate ${data.checked}, găsite ${data.found.length}.`;
     table.style.display = 'table';
     for (const addr of data.found) {
+      const proj = projectDeviceMap[addr];
+      const label = proj ? `găsit — ${proj.name} (${proj.manufacturer_name ?? ''})` : 'găsit — click pentru detalii';
       const tr = document.createElement('tr');
       tr.className = 'found';
-      tr.innerHTML = `<td>${addr}</td><td>găsit — click pentru detalii</td>`;
+      tr.innerHTML = `<td>${addr}</td><td>${label}</td>`;
       tr.addEventListener('click', () => showDetails(addr));
       body.appendChild(tr);
     }
@@ -132,28 +304,91 @@ async function showParameters(addr) {
   try {
     const res = await fetch(`/api/device/${addr}/parameters`);
     const d = await res.json();
+
     if (!d.group_object_table_found) {
-      details.textContent = d.message ?? 'Nu s-a găsit Group Object Table pe acest dispozitiv.';
+      let html = `<div class="field"><b>${d.message ?? 'Nu s-a găsit Group Object Table pe acest dispozitiv.'}</b></div>`;
+      if (d.group_addresses && d.group_addresses.length) {
+        html += `<br><div class="field"><b>Adrese de grup găsite (Address Table)</b></div>`;
+        html += `<ul>` + d.group_addresses.map(ga => `<li>${ga}</li>`).join('') + `</ul>`;
+      }
+      details.innerHTML = html;
       return;
     }
+
     let html = `<div class="field"><b>Group Object Table</b> găsit la object_index=${d.group_object_table_index}, `
-              + `${d.entries.length} intrări valide</div><br>`;
-    html += `<table><thead><tr><th>Entry</th><th>Prioritate</th><th>Comunicare</th>`
+              + `${d.entries.length} intrări valide</div>`;
+    if (d.associations_found !== undefined) {
+      html += `<div class="field"><b>Association Table</b> object_index=${d.association_table_index}, `
+            + `${d.associations_found} asocieri (Address Table object_index=${d.address_table_index}, `
+            + `${d.address_table_entries} adrese)</div>`;
+    } else if (d.note) {
+      html += `<div class="field" style="color:#b45309">${d.note}</div>`;
+    }
+    html += `<br><table><thead><tr><th>Entry</th><th>Adresă de grup</th><th>Prioritate</th><th>Comunicare</th>`
           + `<th>Citire</th><th>Update</th><th>Biți</th><th>DPT plauzibil</th><th>Raw</th></tr></thead><tbody>`;
     for (const e of d.entries) {
-      html += `<tr><td>${e.entry}</td><td>${e.priority}</td><td>${e.communication_enable}</td>`
+      const gas = (e.group_addresses && e.group_addresses.length) ? e.group_addresses.join(', ') : '—';
+      html += `<tr><td>${e.entry}</td><td><b>${gas}</b></td><td>${e.priority}</td><td>${e.communication_enable}</td>`
             + `<td>${e.read_responder}</td><td>${e.update_on_response}</td><td>${e.bits}</td>`
             + `<td>${e.plausible_dpt.join(', ')}</td><td>${e.raw_hex}</td></tr>`;
     }
     html += `</tbody></table>`;
-    html += `<p style="font-size:0.8rem;color:#666">Notă: DPT-ul e o presupunere plauzibilă bazată pe `
-           + `dimensiunea în biți (mai multe DPT-uri au aceeași dimensiune) — nu e adresa de grup exactă `
-           + `(asta necesită Address Table + Association Table, nefinalizat încă).</p>`;
+    html += `<p style="font-size:0.8rem;color:#666">Notă: adresa de grup vine din Address Table + Association `
+           + `Table (când sunt găsite pe dispozitiv); DPT-ul rămâne o presupunere plauzibilă bazată pe `
+           + `dimensiunea în biți (mai multe DPT-uri au aceeași dimensiune).</p>`;
     details.innerHTML = html;
   } catch (err) {
     details.textContent = 'Eroare: ' + err;
   }
 }
+
+const configStatus = document.getElementById('configStatus');
+const configTable = document.getElementById('configTable');
+const configBody = document.getElementById('configBody');
+const downloadConfigBtn = document.getElementById('downloadConfigBtn');
+let lastConfigEntries = [];
+
+async function loadConfig() {
+  const res = await fetch('/api/config');
+  const data = await res.json();
+  lastConfigEntries = data.entries;
+  configBody.innerHTML = '';
+  if (data.entries.length === 0) {
+    configStatus.textContent = 'Niciun obiect alocat încă — bifează obiecte în secțiunea 1 și apasă „Adaugă selecția în config".';
+    configTable.style.display = 'none';
+    downloadConfigBtn.style.display = 'none';
+    return;
+  }
+  configStatus.textContent = `${data.entries.length} obiecte alocate.`;
+  configTable.style.display = 'table';
+  downloadConfigBtn.style.display = 'inline-block';
+  for (const e of data.entries) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${e.individual_address}</td><td>${e.device_name ?? ''}</td>`
+                 + `<td>${(e.group_addresses||[]).join(', ')}</td><td>${e.dpt ?? ''}</td>`
+                 + `<td>${e.label ?? ''}</td><td>${e.room ?? ''}</td>`
+                 + `<td><button class="delConfigBtn" data-id="${e.id}">Șterge</button></td>`;
+    configBody.appendChild(tr);
+  }
+  configBody.querySelectorAll('.delConfigBtn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await fetch(`/api/config/entries/${btn.dataset.id}`, {method: 'DELETE'});
+      await loadConfig();
+    });
+  });
+}
+
+downloadConfigBtn.addEventListener('click', () => {
+  const blob = new Blob([JSON.stringify({entries: lastConfigEntries}, null, 2)], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'knx-config.json';
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+loadConfig();
 </script>
 
 </body>
